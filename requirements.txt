@@ -10,6 +10,7 @@ langchain-groq>=0.3
 
 # Web scraping
 tavily-python>=0.5
+httpx>=0.27
 selenium>=4.27
 
 # Document parsing

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +21,10 @@ class JobPosting(BaseModel):
     requirements: list[str] = Field(
         default_factory=list,
         description="Required skills, qualifications, and experience",
+    )
+    nice_to_have: list[str] = Field(
+        default_factory=list,
+        description="Preferred or bonus qualifications",
     )
     responsibilities: list[str] = Field(
         default_factory=list,
@@ -140,3 +146,69 @@ class ParsedResume(BaseModel):
     languages: list[str] = Field(
         default_factory=list, description="Spoken languages, with proficiency if stated"
     )
+
+
+class RewrittenBullet(BaseModel):
+    source: int = Field(description="Index of the original bullet (within this entry) being rewritten")
+    text: str = Field(description="The rewritten bullet")
+
+
+class TailoredEntry(BaseModel):
+    index: int = Field(description="Index of the experience or project in the original resume")
+    bullets: list[RewrittenBullet] = Field(
+        description="Rewritten bullets for this entry, most relevant first"
+    )
+
+
+class TailoringResult(BaseModel):
+    """LLM output: rewritten content that references original resume entries by index."""
+
+    summary: str = Field(description="2-3 sentence professional summary targeted at this job")
+    skills: list[str] = Field(
+        description="Skills from the original resume, most relevant to the job first"
+    )
+    experience: list[TailoredEntry] = Field(default_factory=list)
+    projects: list[TailoredEntry] = Field(default_factory=list)
+    matched_keywords: list[str] = Field(
+        default_factory=list,
+        description="Job requirements and keywords the resume genuinely demonstrates",
+    )
+    missing_keywords: list[str] = Field(
+        default_factory=list,
+        description="Important job requirements the resume shows no evidence of",
+    )
+    changes: list[str] = Field(
+        default_factory=list, description="Short notes on what was changed and why"
+    )
+
+
+class BulletChange(BaseModel):
+    """An accepted bullet rewrite, kept so reviewers can see before/after."""
+
+    section: Literal["experience", "projects"]
+    entry: int
+    position: int
+    original: str
+    rewritten: str
+
+
+class TailoredResume(BaseModel):
+    resume: ParsedResume
+    bullet_changes: list[BulletChange] = Field(default_factory=list)
+    matched_keywords: list[str] = Field(default_factory=list)
+    missing_keywords: list[str] = Field(default_factory=list)
+    changes: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Rewrites that were rejected by fabrication checks",
+    )
+
+
+class ClaimCheck(BaseModel):
+    id: int = Field(description="The item id being checked")
+    supported: bool = Field(description="True only if every claim is backed by the original")
+    issue: str = Field(default="", description="What is unsupported, if anything")
+
+
+class FactCheckResult(BaseModel):
+    checks: list[ClaimCheck] = Field(default_factory=list)

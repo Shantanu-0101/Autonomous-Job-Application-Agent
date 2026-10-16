@@ -7,9 +7,10 @@ from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    # Inputs
+    # Inputs — job_description (pasted text) takes priority over job_url
     resume_path: str
     job_url: str
+    job_description: str
 
     # Module 2: Scraped job data
     job_details: dict[str, Any] | None
@@ -21,8 +22,9 @@ class AgentState(TypedDict, total=False):
     resume_text: str | None
     parsed_resume: dict[str, Any] | None
 
-    # Module 5: Tailored resume
-    tailored_resume: str | None
+    # Module 5: Tailored resume (a TailoredResume dump)
+    tailored_resume: dict[str, Any] | None
+    tailoring_feedback: list[str]
 
     # Module 6: Cover letter
     cover_letter: str | None
