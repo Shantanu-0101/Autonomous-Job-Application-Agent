@@ -237,3 +237,60 @@ class CoverLetter(BaseModel):
         default_factory=list,
         description="Problems the fact-checker could not resolve; review before sending",
     )
+
+
+RequirementStatus = Literal["met", "partial", "not_met", "unknown"]
+RequirementKind = Literal["skill_or_experience", "eligibility", "personal_trait"]
+
+
+class RequirementCheck(BaseModel):
+    id: str = Field(description="The requirement id, e.g. R1 or N2")
+    kind: RequirementKind = Field(
+        description="eligibility = work authorization, citizenship, clearance, location, or start "
+        "date; personal_trait = motivation, attitude, or values; otherwise skill_or_experience"
+    )
+    status: RequirementStatus = Field(
+        description="met, partial, not_met, or unknown (the resume cannot answer it)"
+    )
+    evidence: str = Field(description="Resume fact supporting the status, or why it is unmet/unknown")
+
+
+class FitCheckResult(BaseModel):
+    """LLM output: one verdict per requirement id."""
+
+    checks: list[RequirementCheck] = Field(description="Exactly one check for every requirement id")
+
+
+class RequirementMatch(BaseModel):
+    requirement: str
+    importance: Literal["required", "nice_to_have"]
+    kind: RequirementKind = "skill_or_experience"
+    status: RequirementStatus
+    evidence: str = ""
+
+
+class FitAssessment(BaseModel):
+    """How well the candidate's real background matches the job. Rewriting cannot change this."""
+
+    score: int | None = Field(description="0-100, computed from requirement statuses; None if unscorable")
+    verdict: str
+    requirements: list[RequirementMatch] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ApplicationReviewResult(BaseModel):
+    """LLM output: how well the documents present the candidate's real qualifications."""
+
+    resume_score: int = Field(ge=0, le=100, description="Presentation quality of the tailored resume")
+    resume_feedback: list[str] = Field(
+        description="Up to 4 specific fixes using only facts in the original resume; empty if none"
+    )
+    cover_letter_score: int = Field(ge=0, le=100, description="Quality of the cover letter")
+    cover_letter_feedback: list[str] = Field(
+        description="Up to 4 specific fixes using only facts in the original resume; empty if none"
+    )
+
+
+class ApplicationReview(ApplicationReviewResult):
+    revision: int = Field(default=0, description="How many revision rounds produced these documents")
+    notes: list[str] = Field(default_factory=list, description="Decisions made during revision")

@@ -66,12 +66,12 @@ def test_prompt_marks_inputs_as_data_and_sets_tone():
         assert tag in prompt
     assert "direct and brief" in prompt and "150-220 words" in prompt
     assert "Raised $40M" in prompt
-    assert "fact-checker rejected" not in prompt
+    assert "Feedback on the previous draft" not in prompt
 
 
 def test_prompt_includes_feedback():
     prompt = build_prompt(RESUME, JOB, feedback=["Paragraph 2: invents Kubernetes"])
-    assert "fact-checker rejected" in prompt and "- Paragraph 2: invents Kubernetes" in prompt
+    assert "Feedback on the previous draft" in prompt and "- Paragraph 2: invents Kubernetes" in prompt
 
 
 # --- Issue detection ---

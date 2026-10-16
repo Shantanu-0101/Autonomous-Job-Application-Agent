@@ -1,20 +1,45 @@
 import logging
-from typing import cast
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, cast
 
+from app.config import settings
+from app.evaluator.scorer import assess_fit, documents_to_revise, review_application
+from app.generators.cover_letter import TONES, generate_cover_letter
+from app.generators.resume_tailor import tailor_resume
 from app.graph.state import AgentState
+from app.llm.models import (
+    ApplicationReview,
+    CompanyResearch,
+    CoverLetter,
+    FitAssessment,
+    JobPosting,
+    ParsedResume,
+    TailoredResume,
+    Tone,
+)
 from app.parsers.resume_parser import (
     ResumeParseError,
     extract_text,
     load_resume_file,
     structure_resume,
 )
-from app.generators.cover_letter import TONES, generate_cover_letter
-from app.generators.resume_tailor import tailor_resume
-from app.llm.models import CompanyResearch, JobPosting, ParsedResume, Tone
 from app.tools.researcher import research_company
 from app.tools.scraper import parse_job_text, scrape_job_posting
 
 logger = logging.getLogger("job_agent.graph")
+
+
+def _load_inputs(state: AgentState) -> tuple[ParsedResume, JobPosting, CompanyResearch | None] | None:
+    resume_data = state.get("parsed_resume")
+    job_data = state.get("job_details")
+    if not (resume_data and job_data):
+        return None
+    research_data = state.get("company_research")
+    return (
+        ParsedResume.model_validate(resume_data),
+        JobPosting.model_validate(job_data),
+        CompanyResearch.model_validate(research_data) if research_data else None,
+    )
 
 
 def parse_resume_node(state: AgentState) -> dict:
@@ -87,22 +112,13 @@ def research_company_node(state: AgentState) -> dict:
 
 
 def tailor_resume_node(state: AgentState) -> dict:
-    resume_data = state.get("parsed_resume")
-    job_data = state.get("job_details")
-    if not (resume_data and job_data):
+    inputs = _load_inputs(state)
+    if inputs is None:
         return {"errors": ["Tailoring skipped: resume or job details are missing"]}
-
-    research_data = state.get("company_research")
-    research = CompanyResearch.model_validate(research_data) if research_data else None
 
     logger.info("Node: tailor_resume")
     try:
-        tailored = tailor_resume(
-            ParsedResume.model_validate(resume_data),
-            JobPosting.model_validate(job_data),
-            research,
-            feedback=state.get("tailoring_feedback"),
-        )
+        tailored = tailor_resume(*inputs)
     except Exception as e:
         logger.error("Resume tailoring failed: %s", e)
         return {"errors": [f"Resume tailoring failed: {e}"]}
@@ -110,27 +126,125 @@ def tailor_resume_node(state: AgentState) -> dict:
     return {"tailored_resume": tailored.model_dump(), "completed_steps": ["tailor_resume"]}
 
 
-def write_cover_letter_node(state: AgentState) -> dict:
-    resume_data = state.get("parsed_resume")
-    job_data = state.get("job_details")
-    if not (resume_data and job_data):
-        return {"errors": ["Cover letter skipped: resume or job details are missing"]}
-
+def _tone(state: AgentState) -> Tone | None:
     tone = state.get("cover_letter_tone") or "professional"
-    if tone not in TONES:
-        return {"errors": [f"Cover letter skipped: unknown tone '{tone}'"]}
+    return cast(Tone, tone) if tone in TONES else None
 
-    research_data = state.get("company_research")
+
+def write_cover_letter_node(state: AgentState) -> dict:
+    inputs = _load_inputs(state)
+    if inputs is None:
+        return {"errors": ["Cover letter skipped: resume or job details are missing"]}
+    tone = _tone(state)
+    if tone is None:
+        return {"errors": [f"Cover letter skipped: unknown tone '{state.get('cover_letter_tone')}'"]}
+
     logger.info("Node: write_cover_letter (%s)", tone)
     try:
-        letter = generate_cover_letter(
-            ParsedResume.model_validate(resume_data),
-            JobPosting.model_validate(job_data),
-            CompanyResearch.model_validate(research_data) if research_data else None,
-            tone=cast(Tone, tone),
-        )
+        letter = generate_cover_letter(*inputs, tone=tone)
     except Exception as e:
         logger.error("Cover letter generation failed: %s", e)
         return {"errors": [f"Cover letter generation failed: {e}"]}
 
     return {"cover_letter": letter.model_dump(), "completed_steps": ["write_cover_letter"]}
+
+
+def assess_fit_node(state: AgentState) -> dict:
+    inputs = _load_inputs(state)
+    if inputs is None:
+        return {"errors": ["Fit assessment skipped: resume or job details are missing"]}
+
+    logger.info("Node: assess_fit")
+    resume, job, _ = inputs
+    try:
+        fit = assess_fit(resume, job)
+    except Exception as e:
+        logger.error("Fit assessment failed: %s", e)
+        return {"errors": [f"Fit assessment failed: {e}"]}
+
+    return {"fit_assessment": fit.model_dump(), "completed_steps": ["assess_fit"]}
+
+
+def review_application_node(state: AgentState) -> dict:
+    inputs = _load_inputs(state)
+    candidate_resume = state.get("candidate_tailored_resume")
+    candidate_letter = state.get("candidate_cover_letter")
+    resume_doc = candidate_resume or state.get("tailored_resume")
+    letter_doc = candidate_letter or state.get("cover_letter")
+    if inputs is None or not (resume_doc and letter_doc):
+        return {"errors": ["Review skipped: tailored resume or cover letter is missing"]}
+
+    resume, job, _ = inputs
+    fit_data = state.get("fit_assessment")
+    logger.info("Node: review_application (revision %d)", state.get("revision_count", 0))
+    try:
+        review = review_application(
+            resume,
+            job,
+            FitAssessment.model_validate(fit_data) if fit_data else None,
+            TailoredResume.model_validate(resume_doc),
+            CoverLetter.model_validate(letter_doc),
+        )
+    except Exception as e:
+        logger.error("Application review failed: %s", e)
+        return {"errors": [f"Application review failed: {e}"]}
+
+    # A revision replaces the current document only if it scores at least as well.
+    previous_data = state.get("application_review")
+    previous = ApplicationReview.model_validate(previous_data) if previous_data else None
+    updates: dict[str, Any] = {"candidate_tailored_resume": None, "candidate_cover_letter": None}
+    if candidate_resume:
+        if previous and review.resume_score < previous.resume_score:
+            review.resume_score, review.resume_feedback = previous.resume_score, previous.resume_feedback
+            review.notes.append("Kept the previous resume: the revision scored lower.")
+        else:
+            updates["tailored_resume"] = candidate_resume
+    if candidate_letter:
+        if previous and review.cover_letter_score < previous.cover_letter_score:
+            review.cover_letter_score = previous.cover_letter_score
+            review.cover_letter_feedback = previous.cover_letter_feedback
+            review.notes.append("Kept the previous cover letter: the revision scored lower.")
+        else:
+            updates["cover_letter"] = candidate_letter
+
+    review.revision = state.get("revision_count", 0)
+    review.notes = (previous.notes if previous else []) + review.notes
+    updates["application_review"] = review.model_dump()
+    updates["completed_steps"] = ["review_application"]
+    return updates
+
+
+def revise_application_node(state: AgentState) -> dict:
+    inputs = _load_inputs(state)
+    review_data = state.get("application_review")
+    tone = _tone(state)
+    if inputs is None or not review_data or tone is None:
+        return {"errors": ["Revision skipped: missing inputs or review"]}
+
+    review = ApplicationReview.model_validate(review_data)
+    docs = documents_to_revise(review, settings.review_quality_threshold)
+    revision = state.get("revision_count", 0) + 1
+    logger.info("Node: revise_application (revision %d: %s)", revision, ", ".join(docs))
+
+    jobs: dict[str, Future] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        if "resume" in docs:
+            jobs["candidate_tailored_resume"] = pool.submit(
+                tailor_resume, *inputs, feedback=review.resume_feedback
+            )
+        if "cover_letter" in docs:
+            jobs["candidate_cover_letter"] = pool.submit(
+                generate_cover_letter, *inputs, tone=tone, feedback=review.cover_letter_feedback
+            )
+
+    updates: dict[str, Any] = {"revision_count": revision, "completed_steps": ["revise_application"]}
+    errors = []
+    for key, future in jobs.items():
+        try:
+            updates[key] = future.result().model_dump()
+        except Exception as e:
+            logger.error("Revision failed for %s: %s", key, e)
+            errors.append(f"Revision failed ({key.removeprefix('candidate_')}): {e}")
+    if errors:
+        updates["errors"] = errors
+    return updates

@@ -30,14 +30,16 @@ class AgentState(TypedDict, total=False):
     cover_letter_tone: str
     cover_letter: dict[str, Any] | None
 
-    # Module 7: Evaluation
-    fit_score: float | None
-    gaps: list[str]
-    improvement_suggestions: list[str]
+    # Module 7: Evaluation (FitAssessment and ApplicationReview dumps)
+    fit_assessment: dict[str, Any] | None
+    application_review: dict[str, Any] | None
+    # Revised documents awaiting review; accepted only if they don't score lower
+    candidate_tailored_resume: dict[str, Any] | None
+    candidate_cover_letter: dict[str, Any] | None
+    revision_count: int
+    max_revisions: int  # overrides settings.max_revisions when set
 
     # Control flow
-    iteration_count: int
-    max_iterations: int
     human_approved: bool | None
 
     # Status tracking — reducers let parallel nodes append in the same step
