@@ -13,6 +13,7 @@ OUTPUT_KEYS = (
     "job_details",
     "company_research",
     "tailored_resume",
+    "cover_letter",
     "completed_steps",
     "errors",
 )
@@ -27,8 +28,8 @@ def health_check() -> None:
 
 
 def print_report(result: dict[str, Any]) -> None:
-    from app.generators.render import render_markdown
-    from app.llm.models import TailoredResume
+    from app.generators.render import render_cover_letter, render_markdown
+    from app.llm.models import CoverLetter, TailoredResume
 
     job = result.get("job_details") or {}
     if job:
@@ -47,14 +48,22 @@ def print_report(result: dict[str, Any]) -> None:
             if items:
                 print(f"{title}:\n" + "\n".join(f"  - {i}" for i in items) + "\n")
 
+    letter_data = result.get("cover_letter")
+    if letter_data:
+        letter = CoverLetter.model_validate(letter_data)
+        print(f"===== Cover letter ({letter.word_count} words) =====\n")
+        print(render_cover_letter(letter))
+        if letter.warnings:
+            print("Cover letter checks:\n" + "\n".join(f"  - {w}" for w in letter.warnings) + "\n")
+
     for error in result.get("errors") or []:
         print(f"ERROR: {error}")
 
 
-def run_pipeline(resume_path: str, job_url: str, job_text: str, as_json: bool) -> int:
+def run_pipeline(resume_path: str, job_url: str, job_text: str, tone: str, as_json: bool) -> int:
     from app.graph.builder import build_graph
 
-    inputs = {"resume_path": resume_path, "job_url": job_url}
+    inputs = {"resume_path": resume_path, "job_url": job_url, "cover_letter_tone": tone}
     if job_text:
         inputs["job_description"] = job_text
     result = build_graph().invoke(inputs)
@@ -72,6 +81,10 @@ def main() -> int:
     parser.add_argument("--job-url", default="", help="Job posting URL")
     parser.add_argument("--job-file", help="Text file with a pasted job description")
     parser.add_argument("--provider", choices=["gemini", "openai", "groq"], help="Override LLM_PROVIDER")
+    parser.add_argument(
+        "--tone", choices=["professional", "enthusiastic", "concise"], default="professional",
+        help="Cover letter tone",
+    )
     parser.add_argument("--json", action="store_true", help="Print raw pipeline state as JSON")
     parser.add_argument("--health-check", action="store_true", help="Verify the LLM connection")
     args = parser.parse_args()
@@ -89,7 +102,7 @@ def main() -> int:
         parser.error("--resume and one of --job-url / --job-file are required (or use --health-check)")
 
     job_text = Path(args.job_file).read_text(encoding="utf-8") if args.job_file else ""
-    return run_pipeline(args.resume, args.job_url, job_text, args.json)
+    return run_pipeline(args.resume, args.job_url, job_text, args.tone, args.json)
 
 
 if __name__ == "__main__":

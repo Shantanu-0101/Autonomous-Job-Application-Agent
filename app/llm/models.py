@@ -211,4 +211,29 @@ class ClaimCheck(BaseModel):
 
 
 class FactCheckResult(BaseModel):
-    checks: list[ClaimCheck] = Field(default_factory=list)
+    # Required (no default) so strict JSON-schema mode can't return an empty object.
+    checks: list[ClaimCheck] = Field(description="Exactly one check for every item id")
+
+
+Tone = Literal["professional", "enthusiastic", "concise"]
+
+
+class CoverLetterDraft(BaseModel):
+    """LLM output for a cover letter, before fact-checking."""
+
+    greeting: str = Field(description='e.g. "Dear Hiring Manager,"')
+    paragraphs: list[str] = Field(description="Body paragraphs, in order")
+    sign_off: str = Field(default="Sincerely,", description='e.g. "Sincerely,"')
+
+
+class CoverLetter(BaseModel):
+    greeting: str
+    paragraphs: list[str]
+    sign_off: str
+    signature: str = Field(default="", description="Candidate's name")
+    tone: Tone = "professional"
+    word_count: int = 0
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Problems the fact-checker could not resolve; review before sending",
+    )

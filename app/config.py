@@ -1,5 +1,7 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -12,6 +14,13 @@ class Settings(BaseSettings):
     # LLM selection
     llm_provider: str = Field(default="gemini", description="gemini | openai | groq")
     llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    # None uses each provider's default; "json_schema" is strictest where the model supports it.
+    llm_structured_output_method: Literal["function_calling", "json_schema", "json_mode"] | None = None
+
+    @field_validator("llm_structured_output_method", mode="before")
+    @classmethod
+    def _blank_means_default(cls, value: object) -> object:
+        return value or None
 
     # Google Gemini
     google_api_key: str = ""

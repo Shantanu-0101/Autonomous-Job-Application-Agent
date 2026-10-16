@@ -41,3 +41,13 @@ def test_default_model_names(monkeypatch):
 def test_faiss_default_path():
     s = Settings(google_api_key="x")
     assert s.faiss_index_path == "data/faiss_index"
+
+
+def test_blank_structured_output_method_means_provider_default():
+    assert Settings(google_api_key="x", llm_structured_output_method="").llm_structured_output_method is None
+    assert Settings(google_api_key="x", llm_structured_output_method="json_schema").llm_structured_output_method == "json_schema"
+
+
+def test_invalid_structured_output_method_rejected():
+    with pytest.raises(Exception):
+        Settings(google_api_key="x", llm_structured_output_method="xml")

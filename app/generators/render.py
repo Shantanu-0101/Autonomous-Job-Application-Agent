@@ -1,4 +1,4 @@
-from app.llm.models import ParsedResume
+from app.llm.models import CoverLetter, ParsedResume
 
 
 def _dates(start: str, end: str) -> str:
@@ -55,3 +55,8 @@ def render_markdown(resume: ParsedResume) -> str:
         if line or (output and output[-1]):
             output.append(line)
     return "\n".join(output).strip() + "\n"
+
+
+def render_cover_letter(letter: CoverLetter) -> str:
+    closing = "\n".join(part for part in (letter.sign_off, letter.signature) if part)
+    return "\n\n".join([letter.greeting, *letter.paragraphs, closing]) + "\n"

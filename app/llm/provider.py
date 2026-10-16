@@ -15,8 +15,15 @@ class StructuredOutputError(RuntimeError):
     """The LLM did not return data matching the requested schema."""
 
 
-def invoke_structured(schema: type[T], prompt: str, *, retries: int = 3) -> T:
-    chain = get_llm().with_structured_output(schema).with_retry(stop_after_attempt=retries)
+def invoke_structured(schema: type[T], prompt: str, *, retries: int = 4) -> T:
+    method = settings.llm_structured_output_method
+    base = get_llm()
+    llm = base.with_structured_output(schema, method=method) if method else base.with_structured_output(schema)
+    # Backoff (~4s, 8s, 16s) outlasts free-tier per-minute rate limits.
+    chain = llm.with_retry(
+        stop_after_attempt=retries,
+        exponential_jitter_params={"initial": 4, "max": 30},
+    )
     result = chain.invoke(prompt)
     if not isinstance(result, schema):
         raise StructuredOutputError(f"LLM returned no valid {schema.__name__}")

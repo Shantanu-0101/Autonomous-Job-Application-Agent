@@ -90,7 +90,10 @@ def test_invoke_structured_returns_model_with_retry(mock_get_llm):
     mock_get_llm.return_value, chain = _fake_llm(expected)
 
     assert invoke_structured(LLMHealthCheck, "hello") is expected
-    chain.with_retry.assert_called_once_with(stop_after_attempt=3)
+    chain.with_retry.assert_called_once_with(
+        stop_after_attempt=4, exponential_jitter_params={"initial": 4, "max": 30}
+    )
+    assert mock_get_llm.return_value.with_structured_output.call_args.kwargs == {}
 
 
 @pytest.mark.parametrize("bad_output", [None, {"status": "ok"}])
@@ -103,3 +106,19 @@ def test_invoke_structured_rejects_invalid_output(mock_get_llm, bad_output):
 
     with pytest.raises(StructuredOutputError, match="LLMHealthCheck"):
         invoke_structured(LLMHealthCheck, "hello")
+
+
+@patch("app.llm.provider.get_llm")
+def test_invoke_structured_uses_configured_method(mock_get_llm, monkeypatch):
+    from app.config import settings
+    from app.llm.models import LLMHealthCheck
+    from app.llm.provider import invoke_structured
+
+    monkeypatch.setattr(settings, "llm_structured_output_method", "json_schema")
+    expected = LLMHealthCheck(status="ok", provider="groq", message="hi")
+    mock_get_llm.return_value, _ = _fake_llm(expected)
+
+    invoke_structured(LLMHealthCheck, "hello")
+
+    call = mock_get_llm.return_value.with_structured_output.call_args
+    assert call.args == (LLMHealthCheck,) and call.kwargs == {"method": "json_schema"}

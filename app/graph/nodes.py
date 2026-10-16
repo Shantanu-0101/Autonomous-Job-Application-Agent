@@ -1,4 +1,5 @@
 import logging
+from typing import cast
 
 from app.graph.state import AgentState
 from app.parsers.resume_parser import (
@@ -7,8 +8,9 @@ from app.parsers.resume_parser import (
     load_resume_file,
     structure_resume,
 )
+from app.generators.cover_letter import TONES, generate_cover_letter
 from app.generators.resume_tailor import tailor_resume
-from app.llm.models import CompanyResearch, JobPosting, ParsedResume
+from app.llm.models import CompanyResearch, JobPosting, ParsedResume, Tone
 from app.tools.researcher import research_company
 from app.tools.scraper import parse_job_text, scrape_job_posting
 
@@ -106,3 +108,29 @@ def tailor_resume_node(state: AgentState) -> dict:
         return {"errors": [f"Resume tailoring failed: {e}"]}
 
     return {"tailored_resume": tailored.model_dump(), "completed_steps": ["tailor_resume"]}
+
+
+def write_cover_letter_node(state: AgentState) -> dict:
+    resume_data = state.get("parsed_resume")
+    job_data = state.get("job_details")
+    if not (resume_data and job_data):
+        return {"errors": ["Cover letter skipped: resume or job details are missing"]}
+
+    tone = state.get("cover_letter_tone") or "professional"
+    if tone not in TONES:
+        return {"errors": [f"Cover letter skipped: unknown tone '{tone}'"]}
+
+    research_data = state.get("company_research")
+    logger.info("Node: write_cover_letter (%s)", tone)
+    try:
+        letter = generate_cover_letter(
+            ParsedResume.model_validate(resume_data),
+            JobPosting.model_validate(job_data),
+            CompanyResearch.model_validate(research_data) if research_data else None,
+            tone=cast(Tone, tone),
+        )
+    except Exception as e:
+        logger.error("Cover letter generation failed: %s", e)
+        return {"errors": [f"Cover letter generation failed: {e}"]}
+
+    return {"cover_letter": letter.model_dump(), "completed_steps": ["write_cover_letter"]}

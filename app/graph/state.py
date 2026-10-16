@@ -26,8 +26,9 @@ class AgentState(TypedDict, total=False):
     tailored_resume: dict[str, Any] | None
     tailoring_feedback: list[str]
 
-    # Module 6: Cover letter
-    cover_letter: str | None
+    # Module 6: Cover letter (a CoverLetter dump)
+    cover_letter_tone: str
+    cover_letter: dict[str, Any] | None
 
     # Module 7: Evaluation
     fit_score: float | None
