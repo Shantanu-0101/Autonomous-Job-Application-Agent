@@ -12,4 +12,5 @@ COPY . .
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "app/ui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Railway and Render provide $PORT; fall back to Streamlit's default locally.
+CMD streamlit run streamlit_app.py --server.port=${PORT:-8501} --server.address=0.0.0.0

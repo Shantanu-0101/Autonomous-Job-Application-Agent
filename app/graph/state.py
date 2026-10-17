@@ -40,8 +40,10 @@ class AgentState(TypedDict, total=False):
     revision_count: int
     max_revisions: int  # overrides settings.max_revisions when set
 
-    # Control flow
-    human_approved: bool | None
+    # Module 8: Human approval
+    approval_status: str  # "approved", "changes_requested", or "rejected"
+    human_feedback: dict[str, list[str]] | None  # {"resume": [...], "cover_letter": [...]}
+    user_requested_revision: bool  # pending candidates come from the user's feedback
 
     # Status tracking — reducers let parallel nodes append in the same step
     completed_steps: Annotated[list[str], operator.add]

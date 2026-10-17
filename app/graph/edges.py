@@ -7,14 +7,19 @@ from app.llm.models import ApplicationReview
 
 
 def route_after_review(state: AgentState) -> str:
-    """Revise weak documents until they pass review or the revision budget runs out."""
+    """Revise weak documents within the revision budget, then hand off to the user."""
     review_data = state.get("application_review")
     if not review_data:
-        return END
+        return END  # nothing to approve: an earlier step failed
     max_revisions = state.get("max_revisions", settings.max_revisions)
-    if state.get("revision_count", 0) >= max_revisions:
-        return END
-    review = ApplicationReview.model_validate(review_data)
-    if documents_to_revise(review, settings.review_quality_threshold):
+    if state.get("revision_count", 0) < max_revisions:
+        review = ApplicationReview.model_validate(review_data)
+        if documents_to_revise(review, settings.review_quality_threshold):
+            return "revise_application"
+    return "human_review"
+
+
+def route_after_human(state: AgentState) -> str:
+    if state.get("approval_status") == "changes_requested":
         return "revise_application"
     return END

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LLMHealthCheck(BaseModel):
@@ -295,3 +295,23 @@ class ApplicationReviewResult(BaseModel):
 class ApplicationReview(ApplicationReviewResult):
     revision: int = Field(default=0, description="How many revision rounds produced these documents")
     notes: list[str] = Field(default_factory=list, description="Decisions made during revision")
+
+
+class HumanDecision(BaseModel):
+    """What the user decided at the approval step. Sent to resume a paused run."""
+
+    action: Literal["approve", "request_changes", "reject"]
+    resume_feedback: str = ""
+    cover_letter_feedback: str = ""
+    # Applied on approve: indices into TailoredResume.bullet_changes to undo
+    reverted_bullets: list[int] = Field(default_factory=list)
+    # Applied on approve: the user's edited cover letter body, paragraphs separated by blank lines
+    cover_letter_text: str | None = None
+
+    @model_validator(mode="after")
+    def _changes_need_feedback(self) -> "HumanDecision":
+        if self.action == "request_changes" and not (
+            self.resume_feedback.strip() or self.cover_letter_feedback.strip()
+        ):
+            raise ValueError("Describe the changes you want to the resume or the cover letter.")
+        return self

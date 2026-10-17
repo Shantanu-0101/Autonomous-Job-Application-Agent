@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.llm.models import HumanDecision
 from app.logging_config import logger
 
 OUTPUT_KEYS = (
@@ -18,6 +19,7 @@ OUTPUT_KEYS = (
     "resume_warnings",
     "fit_assessment",
     "application_review",
+    "approval_status",
     "completed_steps",
     "errors",
 )
@@ -91,28 +93,12 @@ def print_report(result: dict[str, Any]) -> None:
     for error in result.get("errors") or []:
         print(f"ERROR: {error}")
 
+    status = result.get("approval_status")
+    if status:
+        print(f"Status: {status.replace('_', ' ').capitalize()}")
 
-def run_pipeline(
-    resume_path: str,
-    job_url: str,
-    job_text: str,
-    tone: str,
-    max_revisions: int,
-    as_json: bool,
-    output: str | None = None,
-) -> int:
-    from app.graph.builder import build_graph
 
-    inputs: dict[str, Any] = {
-        "resume_path": resume_path,
-        "job_url": job_url,
-        "cover_letter_tone": tone,
-        "max_revisions": max_revisions,
-    }
-    if job_text:
-        inputs["job_description"] = job_text
-    result = build_graph().invoke(inputs)
-
+def write_report(result: dict[str, Any], as_json: bool, output: str | None) -> None:
     # Writing the file ourselves avoids shell redirects re-encoding UTF-8 (e.g. PowerShell's ">").
     with open(output, "w", encoding="utf-8") if output else contextlib.nullcontext(sys.stdout) as out:
         with contextlib.redirect_stdout(out):
@@ -122,6 +108,66 @@ def run_pipeline(
                 print_report(result)
     if output:
         logger.info("Wrote report to %s", output)
+
+
+def ask_decision() -> HumanDecision | None:
+    try:
+        while True:
+            choice = input("\nApprove this application? [a]pprove / [c]hange / [r]eject: ").strip().lower()
+            if choice in ("a", "approve"):
+                return HumanDecision(action="approve")
+            if choice in ("r", "reject"):
+                return HumanDecision(action="reject")
+            if choice in ("c", "change"):
+                resume_fb = input("What should change in the resume? (Enter to skip) ")
+                letter_fb = input("What should change in the cover letter? (Enter to skip) ")
+                if resume_fb.strip() or letter_fb.strip():
+                    return HumanDecision(
+                        action="request_changes",
+                        resume_feedback=resume_fb,
+                        cover_letter_feedback=letter_fb,
+                    )
+                print("Please describe at least one change.")
+    except EOFError:
+        return None
+
+
+def run_pipeline(
+    resume_path: str,
+    job_url: str,
+    job_text: str,
+    tone: str,
+    max_revisions: int,
+    as_json: bool,
+    output: str | None = None,
+    auto_approve: bool = False,
+) -> int:
+    from app.graph.builder import build_graph
+    from app.graph.runner import awaiting_approval, current_state, new_run_config, resume_command
+
+    inputs: dict[str, Any] = {
+        "resume_path": resume_path,
+        "job_url": job_url,
+        "cover_letter_tone": tone,
+        "max_revisions": max_revisions,
+    }
+    if job_text:
+        inputs["job_description"] = job_text
+
+    graph = build_graph()
+    config = new_run_config()
+    graph.invoke(inputs, config)
+
+    while awaiting_approval(graph, config):
+        write_report(current_state(graph, config), as_json, output)
+        decision = HumanDecision(action="approve") if auto_approve else ask_decision()
+        if decision is None:
+            print("No decision given; nothing was approved. Re-run with --yes to approve automatically.")
+            return 2
+        graph.invoke(resume_command(decision), config)
+
+    result = current_state(graph, config)
+    write_report(result, as_json, output)
     return 1 if result.get("errors") else 0
 
 
@@ -141,6 +187,7 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print raw pipeline state as JSON")
     parser.add_argument("--output", help="Write the report to this file (UTF-8) instead of stdout")
+    parser.add_argument("--yes", action="store_true", help="Approve automatically instead of asking")
     parser.add_argument("--health-check", action="store_true", help="Verify the LLM connection")
     args = parser.parse_args()
 
@@ -158,7 +205,14 @@ def main() -> int:
 
     job_text = Path(args.job_file).read_text(encoding="utf-8") if args.job_file else ""
     return run_pipeline(
-        args.resume, args.job_url, job_text, args.tone, args.max_revisions, args.json, args.output
+        args.resume,
+        args.job_url,
+        job_text,
+        args.tone,
+        args.max_revisions,
+        args.json,
+        args.output,
+        auto_approve=args.yes,
     )
 
 

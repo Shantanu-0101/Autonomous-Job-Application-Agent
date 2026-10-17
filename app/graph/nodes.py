@@ -2,9 +2,12 @@ import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, cast
 
+from langgraph.types import interrupt
+
 from app.config import settings
 from app.evaluator.scorer import assess_fit, documents_to_revise, review_application
 from app.generators.cover_letter import TONES, generate_cover_letter
+from app.generators.edits import edit_cover_letter, revert_bullets
 from app.generators.resume_tailor import tailor_resume
 from app.graph.state import AgentState
 from app.llm.models import (
@@ -12,6 +15,7 @@ from app.llm.models import (
     CompanyResearch,
     CoverLetter,
     FitAssessment,
+    HumanDecision,
     JobPosting,
     ParsedResume,
     TailoredResume,
@@ -191,18 +195,26 @@ def review_application_node(state: AgentState) -> dict:
         logger.error("Application review failed: %s", e)
         return {"errors": [f"Application review failed: {e}"]}
 
-    # A revision replaces the current document only if it scores at least as well.
+    # An automatic revision replaces the current document only if it scores at least as well.
+    # Revisions the user asked for are always applied — the user, not the reviewer, decides.
     previous_data = state.get("application_review")
     previous = ApplicationReview.model_validate(previous_data) if previous_data else None
-    updates: dict[str, Any] = {"candidate_tailored_resume": None, "candidate_cover_letter": None}
+    user_requested = bool(state.get("user_requested_revision"))
+    if user_requested:
+        review.notes.append("Applied the changes you requested.")
+    updates: dict[str, Any] = {
+        "candidate_tailored_resume": None,
+        "candidate_cover_letter": None,
+        "user_requested_revision": False,
+    }
     if candidate_resume:
-        if previous and review.resume_score < previous.resume_score:
+        if not user_requested and previous and review.resume_score < previous.resume_score:
             review.resume_score, review.resume_feedback = previous.resume_score, previous.resume_feedback
             review.notes.append("Kept the previous resume: the revision scored lower.")
         else:
             updates["tailored_resume"] = candidate_resume
     if candidate_letter:
-        if previous and review.cover_letter_score < previous.cover_letter_score:
+        if not user_requested and previous and review.cover_letter_score < previous.cover_letter_score:
             review.cover_letter_score = previous.cover_letter_score
             review.cover_letter_feedback = previous.cover_letter_feedback
             review.notes.append("Kept the previous cover letter: the revision scored lower.")
@@ -223,23 +235,40 @@ def revise_application_node(state: AgentState) -> dict:
     if inputs is None or not review_data or tone is None:
         return {"errors": ["Revision skipped: missing inputs or review"]}
 
-    review = ApplicationReview.model_validate(review_data)
-    docs = documents_to_revise(review, settings.review_quality_threshold)
+    # The user's own feedback takes priority over the automatic reviewer's.
+    human = state.get("human_feedback")
+    if human:
+        resume_feedback = human.get("resume", [])
+        letter_feedback = human.get("cover_letter", [])
+    else:
+        review = ApplicationReview.model_validate(review_data)
+        docs = documents_to_revise(review, settings.review_quality_threshold)
+        resume_feedback = review.resume_feedback if "resume" in docs else []
+        letter_feedback = review.cover_letter_feedback if "cover_letter" in docs else []
+
     revision = state.get("revision_count", 0) + 1
-    logger.info("Node: revise_application (revision %d: %s)", revision, ", ".join(docs))
+    logger.info(
+        "Node: revise_application (revision %d, %s feedback: resume=%d, letter=%d)",
+        revision, "user" if human else "reviewer", len(resume_feedback), len(letter_feedback),
+    )
 
     jobs: dict[str, Future] = {}
     with ThreadPoolExecutor(max_workers=2) as pool:
-        if "resume" in docs:
+        if resume_feedback:
             jobs["candidate_tailored_resume"] = pool.submit(
-                tailor_resume, *inputs, feedback=review.resume_feedback
+                tailor_resume, *inputs, feedback=resume_feedback
             )
-        if "cover_letter" in docs:
+        if letter_feedback:
             jobs["candidate_cover_letter"] = pool.submit(
-                generate_cover_letter, *inputs, tone=tone, feedback=review.cover_letter_feedback
+                generate_cover_letter, *inputs, tone=tone, feedback=letter_feedback
             )
 
-    updates: dict[str, Any] = {"revision_count": revision, "completed_steps": ["revise_application"]}
+    updates: dict[str, Any] = {
+        "revision_count": revision,
+        "human_feedback": None,
+        "user_requested_revision": bool(human),
+        "completed_steps": ["revise_application"],
+    }
     errors = []
     for key, future in jobs.items():
         try:
@@ -249,4 +278,39 @@ def revise_application_node(state: AgentState) -> dict:
             errors.append(f"Revision failed ({key.removeprefix('candidate_')}): {e}")
     if errors:
         updates["errors"] = errors
+    return updates
+
+
+def human_review_node(state: AgentState) -> dict:
+    # The graph pauses here until resumed with a HumanDecision. On resume this node runs again
+    # from the top, so nothing before interrupt() may have side effects.
+    decision = HumanDecision.model_validate(
+        interrupt({"step": "human_review", "revision": state.get("revision_count", 0)})
+    )
+    logger.info("Node: human_review — user chose %s", decision.action)
+
+    if decision.action == "reject":
+        return {"approval_status": "rejected", "completed_steps": ["human_review"]}
+
+    if decision.action == "request_changes":
+        return {
+            "approval_status": "changes_requested",
+            "human_feedback": {
+                "resume": [decision.resume_feedback.strip()] if decision.resume_feedback.strip() else [],
+                "cover_letter": (
+                    [decision.cover_letter_feedback.strip()] if decision.cover_letter_feedback.strip() else []
+                ),
+            },
+            "completed_steps": ["human_review"],
+        }
+
+    updates: dict[str, Any] = {"approval_status": "approved", "completed_steps": ["human_review"]}
+    tailored_data = state.get("tailored_resume")
+    if decision.reverted_bullets and tailored_data:
+        tailored = revert_bullets(TailoredResume.model_validate(tailored_data), decision.reverted_bullets)
+        updates["tailored_resume"] = tailored.model_dump()
+    letter_data = state.get("cover_letter")
+    if decision.cover_letter_text is not None and letter_data:
+        letter = edit_cover_letter(CoverLetter.model_validate(letter_data), decision.cover_letter_text)
+        updates["cover_letter"] = letter.model_dump()
     return updates

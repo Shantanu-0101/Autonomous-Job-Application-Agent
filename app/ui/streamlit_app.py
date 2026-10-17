@@ -1,0 +1,328 @@
+import uuid
+from pathlib import Path
+from typing import Any
+
+import streamlit as st
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
+
+import app.logging_config  # noqa: F401  (configures logging)
+from app.config import settings
+from app.generators.render import render_cover_letter, render_markdown
+from app.graph.builder import build_graph
+from app.graph.runner import (
+    STEP_LABELS,
+    awaiting_approval,
+    current_state,
+    new_run_config,
+    resume_command,
+    stream_steps,
+)
+from app.llm.models import (
+    ApplicationReview,
+    CompanyResearch,
+    CoverLetter,
+    FitAssessment,
+    HumanDecision,
+    JobPosting,
+    TailoredResume,
+)
+
+UPLOAD_DIR = Path("data/resumes/uploads")
+STATUS_LABELS = {
+    "met": ":green[Met]",
+    "partial": ":orange[Partial]",
+    "not_met": ":red[Missing]",
+    "unknown": ":gray[Not on resume]",
+}
+
+
+@st.cache_resource
+def get_graph() -> CompiledStateGraph:
+    # One graph (and in-memory checkpointer) per server process, shared by all sessions.
+    return build_graph()
+
+
+def run_with_progress(payload: dict[str, Any] | Command, config: RunnableConfig, label: str) -> bool:
+    with st.status(label, expanded=True) as status:
+        try:
+            for step in stream_steps(get_graph(), payload, config):
+                st.write(f"✓ {STEP_LABELS[step]}")
+        except Exception as e:  # surface failures instead of a Streamlit traceback
+            status.update(label="Something went wrong", state="error")
+            st.error(f"The run stopped unexpectedly: {e}")
+            return False
+        status.update(label="Done", state="complete", expanded=False)
+    return True
+
+
+def start_over() -> None:
+    st.session_state.pop("run_config", None)
+
+
+# --- Input screen ---
+
+
+def input_screen() -> None:
+    st.subheader("1. Your resume")
+    upload = st.file_uploader("Upload your resume", type=["pdf", "docx", "txt"])
+
+    st.subheader("2. The job")
+    url_tab, text_tab = st.tabs(["Job link", "Paste the description"])
+    with url_tab:
+        job_url = st.text_input("Job posting URL", placeholder="https://job-boards.greenhouse.io/...")
+        st.caption(
+            "Greenhouse, Lever, and Ashby links work best. LinkedIn and Naukri block automated "
+            "reading — paste the description instead."
+        )
+    with text_tab:
+        job_text = st.text_area("Job description", height=250)
+
+    ready = upload is not None and bool(job_url.strip() or job_text.strip())
+    if not st.button("Tailor my application", type="primary", disabled=not ready):
+        return
+    assert upload is not None
+
+    data = upload.getvalue()
+    if len(data) > settings.max_resume_size_mb * 1024 * 1024:
+        st.error(f"Resumes must be under {settings.max_resume_size_mb} MB.")
+        return
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    path = UPLOAD_DIR / f"{uuid.uuid4().hex}{Path(upload.name).suffix.lower()}"
+    path.write_bytes(data)
+
+    inputs: dict[str, Any] = {
+        "resume_path": str(path),
+        "job_url": job_url.strip(),
+        "cover_letter_tone": st.session_state.get("tone", "professional"),
+        "max_revisions": st.session_state.get("max_revisions", settings.max_revisions),
+    }
+    if job_text.strip():
+        inputs["job_description"] = job_text.strip()
+
+    config = new_run_config()
+    st.session_state["run_config"] = config
+    try:
+        run_with_progress(inputs, config, "Working on your application — this takes 1-3 minutes")
+    finally:
+        path.unlink(missing_ok=True)  # the parsed resume lives in the run state; drop the upload
+    st.rerun()
+
+
+# --- Results ---
+
+
+def fit_section(state: dict[str, Any]) -> None:
+    for warning in state.get("resume_warnings") or []:
+        st.error(warning)
+
+    fit_data = state.get("fit_assessment")
+    if not fit_data:
+        return
+    fit = FitAssessment.model_validate(fit_data)
+    score_col, text_col = st.columns([1, 3])
+    score_col.metric("Fit", "n/a" if fit.score is None else f"{fit.score}/100")
+    text_col.markdown(f"**{fit.verdict}**")
+    text_col.caption(
+        "Based on which requirements your resume shows. Rewriting can't change this score — "
+        "only real experience can."
+    )
+    for warning in fit.warnings:
+        st.warning(warning)
+    with st.expander("Requirement checklist"):
+        for r in fit.requirements:
+            optional = " *(nice to have)*" if r.importance == "nice_to_have" else ""
+            st.markdown(f"{STATUS_LABELS[r.status]} — {r.requirement}{optional}")
+            if r.evidence:
+                st.caption(r.evidence)
+
+
+def resume_tab(tailored: TailoredResume) -> None:
+    st.markdown(render_markdown(tailored.resume))
+    if tailored.matched_keywords:
+        st.markdown("**Matched:** " + ", ".join(tailored.matched_keywords))
+    if tailored.missing_keywords:
+        st.markdown("**Missing (not added to your resume):** " + ", ".join(tailored.missing_keywords))
+    if tailored.warnings:
+        with st.expander(f"Fact-check notes ({len(tailored.warnings)})"):
+            for w in tailored.warnings:
+                st.caption(w)
+
+
+def changes_tab(tailored: TailoredResume, revision: int) -> list[int]:
+    if not tailored.bullet_changes:
+        st.info("No bullets were rewritten.")
+        return []
+    st.caption("Tick any rewrite you'd rather undo. Your original wording will be used instead.")
+    reverted = []
+    for i, change in enumerate(tailored.bullet_changes):
+        before, after = st.columns(2)
+        before.markdown(f"**Before**\n\n{change.original}")
+        after.markdown(f"**After**\n\n{change.rewritten}")
+        if st.checkbox("Keep my original", key=f"revert_{revision}_{i}"):
+            reverted.append(i)
+        st.divider()
+    return reverted
+
+
+def letter_tab(letter: CoverLetter, revision: int) -> str:
+    st.caption(f"{letter.greeting} … {letter.sign_off} {letter.signature}")
+    text = st.text_area(
+        "Cover letter (edit freely — paragraphs are separated by blank lines)",
+        value="\n\n".join(letter.paragraphs),
+        height=400,
+        key=f"letter_{revision}",
+    )
+    for w in letter.warnings:
+        st.warning(w)
+    return text
+
+
+def job_tab(state: dict[str, Any]) -> None:
+    job = JobPosting.model_validate(state["job_details"])
+    st.markdown(f"**{job.title}** at **{job.company}** — {job.location or 'Location not stated'}")
+    st.caption(f"Salary: {job.salary_range}")
+    for title, items in (
+        ("Requirements", job.requirements),
+        ("Nice to have", job.nice_to_have),
+        ("Responsibilities", job.responsibilities),
+    ):
+        if items:
+            st.markdown(f"**{title}**\n" + "\n".join(f"- {i}" for i in items))
+    research_data = state.get("company_research")
+    if research_data:
+        research = CompanyResearch.model_validate(research_data)
+        st.markdown(f"**About {research.name}**\n\n{research.summary}")
+        if research.recent_news:
+            st.markdown("**Recent news**\n" + "\n".join(f"- {n}" for n in research.recent_news))
+
+
+def decide(decision: HumanDecision, config: RunnableConfig, label: str) -> None:
+    if run_with_progress(resume_command(decision), config, label):
+        st.rerun()
+
+
+def review_screen(state: dict[str, Any], config: RunnableConfig) -> None:
+    tailored = TailoredResume.model_validate(state["tailored_resume"])
+    letter = CoverLetter.model_validate(state["cover_letter"])
+    review = ApplicationReview.model_validate(state["application_review"])
+    revision = state.get("revision_count", 0)
+
+    st.caption(
+        f"AI review — resume {review.resume_score}/100, cover letter {review.cover_letter_score}/100"
+        + (f" · {revision} revision(s)" if revision else "")
+    )
+    for note in review.notes:
+        st.caption(f"• {note}")
+
+    resume_t, changes_t, letter_t, job_t = st.tabs(
+        ["Tailored resume", f"Changes ({len(tailored.bullet_changes)})", "Cover letter", "Job & company"]
+    )
+    with resume_t:
+        resume_tab(tailored)
+    with changes_t:
+        reverted = changes_tab(tailored, revision)
+    with letter_t:
+        letter_text = letter_tab(letter, revision)
+    with job_t:
+        job_tab(state)
+
+    st.subheader("Your decision")
+    approve_col, reject_col = st.columns(2)
+    if approve_col.button("Approve", type="primary"):
+        decide(
+            HumanDecision(action="approve", reverted_bullets=reverted, cover_letter_text=letter_text),
+            config,
+            "Saving your approval",
+        )
+    if reject_col.button("Reject — don't apply"):
+        decide(HumanDecision(action="reject"), config, "Recording your decision")
+
+    with st.form("request_changes"):
+        st.markdown("**Or ask for changes**")
+        resume_fb = st.text_area("What should change in the resume?", height=80)
+        letter_fb = st.text_area("What should change in the cover letter?", height=80)
+        if st.form_submit_button("Revise"):
+            if not (resume_fb.strip() or letter_fb.strip()):
+                st.error("Describe at least one change.")
+            else:
+                decide(
+                    HumanDecision(
+                        action="request_changes",
+                        resume_feedback=resume_fb,
+                        cover_letter_feedback=letter_fb,
+                    ),
+                    config,
+                    "Revising — this takes about a minute",
+                )
+
+
+def finished_screen(state: dict[str, Any]) -> None:
+    status = state.get("approval_status")
+    if status == "rejected":
+        st.info("You chose not to apply to this job.")
+        return
+    if status != "approved":
+        return
+    st.success("Approved. Download your documents below.")
+    tailored = TailoredResume.model_validate(state["tailored_resume"])
+    letter = CoverLetter.model_validate(state["cover_letter"])
+    resume_col, letter_col = st.columns(2)
+    resume_col.download_button(
+        "Download resume (.md)", render_markdown(tailored.resume), "tailored_resume.md", "text/markdown"
+    )
+    letter_col.download_button(
+        "Download cover letter (.txt)", render_cover_letter(letter), "cover_letter.txt", "text/plain"
+    )
+
+
+def results_screen(config: RunnableConfig) -> None:
+    graph = get_graph()
+    state = current_state(graph, config)
+    if not state:
+        st.warning("This session has expired. Please start over.")
+        return
+
+    job = state.get("job_details")
+    if job:
+        st.header(f"{job['title']} at {job['company']}")
+    fit_section(state)
+
+    if awaiting_approval(graph, config):
+        review_screen(state, config)
+    elif state.get("approval_status"):
+        finished_screen(state)
+    for error in state.get("errors") or []:
+        st.error(error)
+
+
+# --- Page ---
+
+
+def main() -> None:
+    st.set_page_config(page_title="Job Application Agent", layout="wide")
+    st.title("Job Application Agent")
+    st.caption(
+        "Tailors your resume and cover letter to a job using only facts from your resume. "
+        "Nothing is sent without your approval."
+    )
+
+    with st.sidebar:
+        st.header("Settings")
+        st.selectbox("Cover letter tone", ["professional", "enthusiastic", "concise"], key="tone")
+        st.slider(
+            "Automatic revision rounds", 0, 3, value=settings.max_revisions, key="max_revisions",
+            help="More rounds can improve the documents but take longer and use more of your LLM quota.",
+        )
+        st.caption(f"LLM provider: {settings.llm_provider}")
+        if st.session_state.get("run_config") and st.button("Start over"):
+            start_over()
+            st.rerun()
+
+    config = st.session_state.get("run_config")
+    if config is None:
+        input_screen()
+    else:
+        results_screen(config)

@@ -1,0 +1,7 @@
+[server]
+# Matches MAX_RESUME_SIZE_MB; the parser enforces it again server-side.
+maxUploadSize = 5
+
+[browser]
+# Users upload personal documents; don't send usage statistics.
+gatherUsageStats = false
