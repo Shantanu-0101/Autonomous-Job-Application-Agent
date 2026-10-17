@@ -107,6 +107,7 @@ class Education(BaseModel):
     institution: str = Field(description="School, college, or university name")
     degree: str = Field(default="", description="Degree, e.g. 'B.Tech', 'Master of Science'")
     field_of_study: str = Field(default="", description="Major or specialization")
+    location: str = Field(default="", description="City or campus if stated")
     start_date: str = Field(default="", description="Start date as written")
     end_date: str = Field(default="", description="End or expected graduation date as written")
     grade: str = Field(default="", description="GPA, CGPA, or percentage if stated")

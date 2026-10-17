@@ -38,7 +38,11 @@ def render_markdown(resume: ParsedResume) -> str:
         lines += ["", "## Education"]
         for ed in resume.education:
             degree = _join(ed.degree, ed.field_of_study, sep=", ")
-            lines += ["", f"### {ed.institution}", _join(degree, _dates(ed.start_date, ed.end_date), ed.grade)]
+            lines += [
+                "",
+                f"### {ed.institution}",
+                _join(degree, ed.location, _dates(ed.start_date, ed.end_date), ed.grade),
+            ]
             lines += [f"- {h}" for h in ed.highlights]
 
     for title, items in (

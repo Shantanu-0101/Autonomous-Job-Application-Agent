@@ -207,6 +207,7 @@ def test_graph_ends_after_review_when_documents_pass():
     )
 
     assert result["fit_assessment"]["score"] == 70
+    assert result["resume_warnings"] == []
     assert result["application_review"]["resume_score"] == 90
     assert sorted(result["completed_steps"]) == sorted([
         "parse_resume", "scrape_job", "research_company",

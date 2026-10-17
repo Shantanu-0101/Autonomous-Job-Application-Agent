@@ -20,6 +20,7 @@ from app.llm.models import (
 from app.parsers.resume_parser import (
     ResumeParseError,
     extract_text,
+    find_link_issues,
     load_resume_file,
     structure_resume,
 )
@@ -66,6 +67,7 @@ def parse_resume_node(state: AgentState) -> dict:
     return {
         "resume_text": text,
         "parsed_resume": parsed.model_dump(),
+        "resume_warnings": find_link_issues(text, parsed),
         "completed_steps": ["parse_resume"],
     }
 

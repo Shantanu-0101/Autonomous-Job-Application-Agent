@@ -29,7 +29,7 @@ How to tailor:
 - Start each bullet with a strong action verb and keep it to one or two lines.
 - Each rewritten bullet must set "source" to the index of the original bullet it rewrites. Rewrite each original bullet at most once; do not merge or split bullets.
 - Order bullets within each entry from most to least relevant. You may omit a bullet only if it is irrelevant to this job.
-- Write a 2-3 sentence summary aimed at this role, using only facts from the resume.
+- Write a 2-3 sentence summary aimed at this role, using only facts from the resume. In the summary, name only technologies the candidate used in an experience or project, not ones that appear only in the skills list, and avoid unearned phrases like "demonstrated expertise" or "proven track record".
 - Order skills by relevance to the job. You may drop irrelevant skills.
 
 Never fabricate:
@@ -37,6 +37,7 @@ Never fabricate:
 - Do not add employers, titles, dates, metrics, technologies, tools, methods, or skills the original does not state.
 - Do not add outcomes or purposes the original does not state (e.g. "enabling faster releases", "to support monitoring").
 - Do not inflate scope or seniority (e.g. "helped build" must not become "led", "mentored" must not become "managed").
+- Do not borrow a job term for different work (e.g. calling LLM API orchestration "model architectures" or "model training").
 - Requirements the resume does not support go in missing_keywords only — never into the resume.
 
 Tailoring is mostly about order, emphasis, and terminology — not adding words. A good rewrite is usually the original with a stronger verb or the job's term substituted. If a bullet already reads well, return it unchanged.
@@ -79,6 +80,8 @@ Mark an item unsupported if the rewritten text claims anything its original does
 - new outcomes, impacts, or purposes (e.g. "enabling faster releases", "to support monitoring")
 - inflated scope or seniority (e.g. "helped" -> "led", "mentored" -> "managed")
 - changed or dropped numbers
+- a job term applied to different work (e.g. API orchestration described as "model architectures")
+- for the summary: claims of using or having expertise in a technology that appears only in the skills list, with no experience or project showing it
 Rephrasing, reordering, stronger action verbs, and standard names for the same thing are fine.
 
 Facts stated in an item's context (its job title, employer, or project technologies) also count as supported.

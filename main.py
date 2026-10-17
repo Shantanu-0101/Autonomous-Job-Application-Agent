@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import io
 import json
 import sys
@@ -14,6 +15,7 @@ OUTPUT_KEYS = (
     "company_research",
     "tailored_resume",
     "cover_letter",
+    "resume_warnings",
     "fit_assessment",
     "application_review",
     "completed_steps",
@@ -36,6 +38,10 @@ def print_report(result: dict[str, Any]) -> None:
     job = result.get("job_details") or {}
     if job:
         print(f"Job: {job.get('title')} at {job.get('company')}\n")
+
+    resume_warnings = result.get("resume_warnings") or []
+    if resume_warnings:
+        print("===== Resume checks =====\n" + "\n".join(f"  ! {w}" for w in resume_warnings) + "\n")
 
     fit_data = result.get("fit_assessment")
     if fit_data:
@@ -87,7 +93,13 @@ def print_report(result: dict[str, Any]) -> None:
 
 
 def run_pipeline(
-    resume_path: str, job_url: str, job_text: str, tone: str, max_revisions: int, as_json: bool
+    resume_path: str,
+    job_url: str,
+    job_text: str,
+    tone: str,
+    max_revisions: int,
+    as_json: bool,
+    output: str | None = None,
 ) -> int:
     from app.graph.builder import build_graph
 
@@ -101,10 +113,15 @@ def run_pipeline(
         inputs["job_description"] = job_text
     result = build_graph().invoke(inputs)
 
-    if as_json:
-        print(json.dumps({k: result.get(k) for k in OUTPUT_KEYS}, indent=2, ensure_ascii=False))
-    else:
-        print_report(result)
+    # Writing the file ourselves avoids shell redirects re-encoding UTF-8 (e.g. PowerShell's ">").
+    with open(output, "w", encoding="utf-8") if output else contextlib.nullcontext(sys.stdout) as out:
+        with contextlib.redirect_stdout(out):
+            if as_json:
+                print(json.dumps({k: result.get(k) for k in OUTPUT_KEYS}, indent=2, ensure_ascii=False))
+            else:
+                print_report(result)
+    if output:
+        logger.info("Wrote report to %s", output)
     return 1 if result.get("errors") else 0
 
 
@@ -123,6 +140,7 @@ def main() -> int:
         help="Self-evaluation revision rounds (0 disables)",
     )
     parser.add_argument("--json", action="store_true", help="Print raw pipeline state as JSON")
+    parser.add_argument("--output", help="Write the report to this file (UTF-8) instead of stdout")
     parser.add_argument("--health-check", action="store_true", help="Verify the LLM connection")
     args = parser.parse_args()
 
@@ -140,7 +158,7 @@ def main() -> int:
 
     job_text = Path(args.job_file).read_text(encoding="utf-8") if args.job_file else ""
     return run_pipeline(
-        args.resume, args.job_url, job_text, args.tone, args.max_revisions, args.json
+        args.resume, args.job_url, job_text, args.tone, args.max_revisions, args.json, args.output
     )
 
 

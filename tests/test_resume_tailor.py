@@ -41,7 +41,7 @@ ORIGINAL = ParsedResume(
         ),
     ],
     projects=[Project(name="AutoApply", technologies=["LangGraph"], bullets=["Built an agent"])],
-    education=[Education(institution="UT Austin", degree="B.S.")],
+    education=[Education(institution="UT Austin", degree="B.S.", location="Austin, TX")],
 )
 
 JOB = JobPosting(
@@ -257,6 +257,7 @@ def test_render_markdown_includes_all_sections():
         assert heading in md
     assert "### Software Engineer — Acme\nJan 2023 – Present\n- Built REST APIs" in md
     assert "### AutoApply (LangGraph)" in md
+    assert "### UT Austin\nB.S. | Austin, TX" in md
     assert "\n\n\n" not in md
 
 

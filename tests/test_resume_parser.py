@@ -15,6 +15,7 @@ from app.parsers.resume_parser import (
     _normalize,
     detect_file_type,
     extract_text,
+    find_link_issues,
     load_resume_file,
     parse_resume,
     structure_resume,
@@ -221,3 +222,26 @@ def test_parse_resume_from_bytes_and_path(mock_invoke, tmp_path):
     path = tmp_path / "resume.docx"
     path.write_bytes(make_docx())
     assert parse_resume(path).contact.name == "Jane Doe"
+
+
+# --- Link checks ---
+
+
+def test_find_link_issues_flags_mismatched_email_link():
+    resume = ParsedResume(contact=ContactInfo(name="Jane Doe", email="Jane.Doe@example.com"))
+    text = "Links found in document:\nmailto:jane.doe@example.com\nmailto:old.friend%40example.com"
+    issues = find_link_issues(text, resume)
+    assert len(issues) == 1
+    assert '"old.friend@example.com"' in issues[0] and '"Jane.Doe@example.com"' in issues[0]
+
+
+def test_find_link_issues_ignores_resumes_without_email():
+    assert find_link_issues("mailto:a@b.com", ParsedResume(contact=ContactInfo(name="Jane"))) == []
+
+
+@patch("app.parsers.resume_parser.invoke_structured")
+def test_structure_resume_drops_mailto_from_other_links(mock_invoke):
+    parsed = parsed_sample()
+    parsed.contact.other_links = ["mailto:x@y.com", "https://kaggle.com/jane", "MAILTO:z@y.com"]
+    mock_invoke.return_value = parsed
+    assert structure_resume(RESUME_TEXT).contact.other_links == ["https://kaggle.com/jane"]

@@ -21,6 +21,7 @@ class AgentState(TypedDict, total=False):
     # Module 4: Parsed resume (pre-fill parsed_resume to skip parsing)
     resume_text: str | None
     parsed_resume: dict[str, Any] | None
+    resume_warnings: list[str]
 
     # Module 5: Tailored resume (a TailoredResume dump)
     tailored_resume: dict[str, Any] | None
