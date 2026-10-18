@@ -18,6 +18,7 @@ from app.llm.models import (
     HumanDecision,
     JobPosting,
     ParsedResume,
+    Submission,
     TailoredResume,
     Tone,
 )
@@ -28,8 +29,10 @@ from app.parsers.resume_parser import (
     load_resume_file,
     structure_resume,
 )
+from app.tools.email_sender import EmailNotConfiguredError, EmailSendError
 from app.tools.researcher import research_company
 from app.tools.scraper import parse_job_text, scrape_job_posting
+from app.tools.submitter import application_url, submit_by_email
 
 logger = logging.getLogger("job_agent.graph")
 
@@ -304,7 +307,11 @@ def human_review_node(state: AgentState) -> dict:
             "completed_steps": ["human_review"],
         }
 
-    updates: dict[str, Any] = {"approval_status": "approved", "completed_steps": ["human_review"]}
+    updates: dict[str, Any] = {
+        "approval_status": "approved",
+        "send_to": decision.send_to,
+        "completed_steps": ["human_review"],
+    }
     tailored_data = state.get("tailored_resume")
     if decision.reverted_bullets and tailored_data:
         tailored = revert_bullets(TailoredResume.model_validate(tailored_data), decision.reverted_bullets)
@@ -314,3 +321,30 @@ def human_review_node(state: AgentState) -> dict:
         letter = edit_cover_letter(CoverLetter.model_validate(letter_data), decision.cover_letter_text)
         updates["cover_letter"] = letter.model_dump()
     return updates
+
+
+def submit_application_node(state: AgentState) -> dict:
+    existing = state.get("submission")
+    if existing and existing.get("status") == "sent":
+        return {}  # never send the same application twice
+
+    job = JobPosting.model_validate(state["job_details"])
+    send_to = state.get("send_to")
+    if not send_to:
+        submission = Submission(method="manual", status="ready", apply_url=application_url(job))
+        return {"submission": submission.model_dump(), "completed_steps": ["submit_application"]}
+
+    logger.info("Node: submit_application — emailing %s", send_to)
+    try:
+        submission = submit_by_email(
+            send_to,
+            job,
+            TailoredResume.model_validate(state["tailored_resume"]),
+            CoverLetter.model_validate(state["cover_letter"]),
+        )
+    except (EmailSendError, EmailNotConfiguredError) as e:
+        logger.error("Sending failed: %s", e)
+        failed = Submission(method="email", status="failed", recipient=send_to, error=str(e))
+        return {"submission": failed.model_dump(), "errors": [f"Sending failed: {e}"]}
+
+    return {"submission": submission.model_dump(), "completed_steps": ["submit_application"]}

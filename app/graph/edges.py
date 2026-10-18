@@ -20,6 +20,9 @@ def route_after_review(state: AgentState) -> str:
 
 
 def route_after_human(state: AgentState) -> str:
-    if state.get("approval_status") == "changes_requested":
+    status = state.get("approval_status")
+    if status == "changes_requested":
         return "revise_application"
+    if status == "approved":
+        return "submit_application"
     return END

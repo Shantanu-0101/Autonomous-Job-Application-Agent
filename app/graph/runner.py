@@ -18,6 +18,7 @@ STEP_LABELS = {
     "review_application": "Reviewed the application",
     "revise_application": "Revised the documents",
     "human_review": "Recorded your decision",
+    "submit_application": "Prepared your application",
 }
 
 

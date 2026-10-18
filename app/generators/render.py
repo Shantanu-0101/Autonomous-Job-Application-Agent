@@ -1,19 +1,19 @@
 from app.llm.models import CoverLetter, ParsedResume
 
 
-def _dates(start: str, end: str) -> str:
+def date_range(start: str, end: str) -> str:
     return " – ".join(d for d in (start, end) if d)
 
 
-def _join(*parts: str, sep: str = " | ") -> str:
+def join_parts(*parts: str, sep: str = " | ") -> str:
     return sep.join(p for p in parts if p)
 
 
 def render_markdown(resume: ParsedResume) -> str:
     c = resume.contact
     lines = [f"# {c.name}" if c.name else ""]
-    lines.append(_join(c.email, c.phone, c.location))
-    lines.append(_join(c.linkedin, c.github, c.portfolio, *c.other_links))
+    lines.append(join_parts(c.email, c.phone, c.location))
+    lines.append(join_parts(c.linkedin, c.github, c.portfolio, *c.other_links))
 
     if resume.summary:
         lines += ["", "## Summary", resume.summary]
@@ -24,24 +24,24 @@ def render_markdown(resume: ParsedResume) -> str:
     if resume.experience:
         lines += ["", "## Experience"]
         for e in resume.experience:
-            lines += ["", f"### {e.title} — {e.company}", _join(e.location, _dates(e.start_date, e.end_date))]
+            lines += ["", f"### {e.title} — {e.company}", join_parts(e.location, date_range(e.start_date, e.end_date))]
             lines += [f"- {b}" for b in e.bullets]
 
     if resume.projects:
         lines += ["", "## Projects"]
         for p in resume.projects:
             heading = f"### {p.name}" + (f" ({', '.join(p.technologies)})" if p.technologies else "")
-            lines += ["", heading, _join(p.description, p.link)]
+            lines += ["", heading, join_parts(p.description, p.link)]
             lines += [f"- {b}" for b in p.bullets]
 
     if resume.education:
         lines += ["", "## Education"]
         for ed in resume.education:
-            degree = _join(ed.degree, ed.field_of_study, sep=", ")
+            degree = join_parts(ed.degree, ed.field_of_study, sep=", ")
             lines += [
                 "",
                 f"### {ed.institution}",
-                _join(degree, ed.location, _dates(ed.start_date, ed.end_date), ed.grade),
+                join_parts(degree, ed.location, date_range(ed.start_date, ed.end_date), ed.grade),
             ]
             lines += [f"- {h}" for h in ed.highlights]
 

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # Google Gemini
     google_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
 
     # OpenAI
     openai_api_key: str = ""
@@ -37,9 +37,16 @@ class Settings(BaseSettings):
     # Tavily
     tavily_api_key: str = ""
 
-    # Email
-    sendgrid_api_key: str = ""
+    # Email (SMTP): works with Gmail/Outlook app passwords or SendGrid's relay (username "apikey")
+    smtp_host: str = ""
+    smtp_port: int = 587  # 587 = STARTTLS, 465 = implicit TLS
+    smtp_username: str = ""
+    smtp_password: str = ""
     sender_email: str = ""
+    sender_name: str = ""
+
+    # Exported documents
+    pdf_page_size: Literal["a4", "letter"] = "a4"
 
     # Self-evaluation: documents scoring below the threshold get revised, up to max_revisions times
     review_quality_threshold: int = Field(default=80, ge=0, le=100)

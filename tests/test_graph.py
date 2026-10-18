@@ -13,10 +13,12 @@ from app.graph.nodes import (
     review_application_node,
     revise_application_node,
     scrape_job_node,
+    submit_application_node,
     tailor_resume_node,
     write_cover_letter_node,
 )
 from app.graph.state import AgentState
+from app.tools.email_sender import EmailSendError
 from app.llm.models import (
     ApplicationReview,
     BulletChange,
@@ -28,6 +30,7 @@ from app.llm.models import (
     HumanDecision,
     JobPosting,
     ParsedResume,
+    Submission,
     TailoredResume,
 )
 
@@ -182,7 +185,8 @@ def test_route_after_review(extra, expected):
 
 @pytest.mark.parametrize(
     ("status", "expected"),
-    [("changes_requested", "revise_application"), ("approved", END), ("rejected", END)],
+    [("changes_requested", "revise_application"), ("approved", "submit_application"),
+     ("rejected", END)],
 )
 def test_route_after_human(status, expected):
     assert route_after_human({"approval_status": status}) == expected
@@ -258,8 +262,10 @@ def test_approve_finishes_the_run(agent):
     state = current_state(graph, config)
     assert not awaiting_approval(graph, config)
     assert state["approval_status"] == "approved"
-    assert state["completed_steps"][-1] == "human_review"
+    assert state["completed_steps"][-2:] == ["human_review", "submit_application"]
     assert state["tailored_resume"] == TAILORED.model_dump()
+    assert state["submission"]["status"] == "ready"
+    assert state["submission"]["apply_url"] == ""  # JOB has no source URL in this test
 
 
 def test_approve_applies_reverted_bullets_and_letter_edits(agent):
@@ -341,3 +347,37 @@ def test_graph_ends_without_approval_when_steps_fail(*_mocks):
 def test_request_changes_requires_feedback():
     with pytest.raises(ValueError, match="Describe the changes"):
         HumanDecision(action="request_changes", resume_feedback="  ")
+
+
+# --- Submission ---
+
+
+def test_approve_with_send_to_emails_the_application(agent):
+    graph, config, _ = agent([review(90, 90)], [TAILORED], [LETTER])
+    sent = Submission(method="email", status="sent", recipient="hr@acme.io", message_id="<1@x>")
+    with patch("app.graph.nodes.submit_by_email", return_value=sent) as mock_submit:
+        graph.invoke(resume_command(HumanDecision(action="approve", send_to="hr@acme.io")), config)
+
+    assert mock_submit.call_args.args == ("hr@acme.io", JOB, TAILORED, LETTER)
+    state = current_state(graph, config)
+    assert state["submission"]["status"] == "sent"
+    assert state["completed_steps"][-1] == "submit_application"
+
+
+def test_failed_send_is_recorded_not_raised(agent):
+    graph, config, _ = agent([review(90, 90)], [TAILORED], [LETTER])
+    with patch("app.graph.nodes.submit_by_email", side_effect=EmailSendError("server rejected login")):
+        graph.invoke(resume_command(HumanDecision(action="approve", send_to="hr@acme.io")), config)
+
+    state = current_state(graph, config)
+    assert state["submission"] == Submission(
+        method="email", status="failed", recipient="hr@acme.io", error="server rejected login"
+    ).model_dump()
+    assert state["errors"] == ["Sending failed: server rejected login"]
+
+
+@patch("app.graph.nodes.submit_by_email")
+def test_submit_node_never_sends_twice(mock_submit):
+    already = Submission(method="email", status="sent", recipient="hr@acme.io").model_dump()
+    assert submit_application_node(base_state(submission=already, send_to="hr@acme.io")) == {}
+    mock_submit.assert_not_called()

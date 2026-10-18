@@ -33,7 +33,7 @@ def test_default_model_names(monkeypatch):
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("GROQ_MODEL", raising=False)
     s = Settings(google_api_key="x", _env_file=None)
-    assert s.gemini_model == "gemini-2.5-flash"
+    assert s.gemini_model == "gemini-3.6-flash"
     assert s.openai_model == "gpt-4o"
     assert s.groq_model == "llama-3.3-70b-versatile"
 

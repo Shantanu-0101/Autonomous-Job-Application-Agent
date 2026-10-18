@@ -1,6 +1,9 @@
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 class LLMHealthCheck(BaseModel):
@@ -307,11 +310,29 @@ class HumanDecision(BaseModel):
     reverted_bullets: list[int] = Field(default_factory=list)
     # Applied on approve: the user's edited cover letter body, paragraphs separated by blank lines
     cover_letter_text: str | None = None
+    # On approve: email the application to this address. The user confirms it explicitly.
+    send_to: str | None = None
 
     @model_validator(mode="after")
-    def _changes_need_feedback(self) -> "HumanDecision":
+    def _check_consistency(self) -> "HumanDecision":
         if self.action == "request_changes" and not (
             self.resume_feedback.strip() or self.cover_letter_feedback.strip()
         ):
             raise ValueError("Describe the changes you want to the resume or the cover letter.")
+        if self.send_to is not None:
+            self.send_to = self.send_to.strip()
+            if self.action != "approve":
+                raise ValueError("Only an approved application can be sent.")
+            if not EMAIL_PATTERN.fullmatch(self.send_to):
+                raise ValueError(f'"{self.send_to}" is not a valid email address.')
         return self
+
+
+class Submission(BaseModel):
+    method: Literal["email", "manual"]
+    status: Literal["sent", "failed", "ready"]  # ready = the user applies on the job's own page
+    recipient: str = ""
+    apply_url: str = ""
+    message_id: str = ""
+    sent_at: str = ""
+    error: str = ""

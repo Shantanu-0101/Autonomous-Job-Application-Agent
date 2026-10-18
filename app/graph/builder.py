@@ -11,6 +11,7 @@ from app.graph.nodes import (
     review_application_node,
     revise_application_node,
     scrape_job_node,
+    submit_application_node,
     tailor_resume_node,
     write_cover_letter_node,
 )
@@ -32,6 +33,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("review_application", review_application_node)
     graph.add_node("revise_application", revise_application_node)
     graph.add_node("human_review", human_review_node)
+    graph.add_node("submit_application", submit_application_node)
 
     # Resume parsing is independent of the job branch, so both start in parallel.
     graph.add_edge(START, "parse_resume")
@@ -48,6 +50,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         "review_application", route_after_review, ["revise_application", "human_review", END]
     )
     graph.add_edge("revise_application", "review_application")
-    graph.add_conditional_edges("human_review", route_after_human, ["revise_application", END])
+    graph.add_conditional_edges(
+        "human_review", route_after_human, ["revise_application", "submit_application", END]
+    )
+    graph.add_edge("submit_application", END)
 
     return graph.compile(checkpointer=checkpointer or InMemorySaver())

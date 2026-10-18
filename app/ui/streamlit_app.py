@@ -9,7 +9,14 @@ from langgraph.types import Command
 
 import app.logging_config  # noqa: F401  (configures logging)
 from app.config import settings
-from app.generators.render import render_cover_letter, render_markdown
+from app.generators.export import (
+    cover_letter_docx,
+    cover_letter_pdf,
+    resume_docx,
+    resume_pdf,
+    safe_filename,
+)
+from app.generators.render import render_markdown
 from app.graph.builder import build_graph
 from app.graph.runner import (
     STEP_LABELS,
@@ -20,16 +27,21 @@ from app.graph.runner import (
     stream_steps,
 )
 from app.llm.models import (
+    EMAIL_PATTERN,
     ApplicationReview,
     CompanyResearch,
     CoverLetter,
     FitAssessment,
     HumanDecision,
     JobPosting,
+    Submission,
     TailoredResume,
 )
+from app.tools.email_sender import email_configured
+from app.tools.submitter import application_email
 
 UPLOAD_DIR = Path("data/resumes/uploads")
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 STATUS_LABELS = {
     "met": ":green[Met]",
     "partial": ":orange[Partial]",
@@ -199,6 +211,33 @@ def job_tab(state: dict[str, Any]) -> None:
             st.markdown("**Recent news**\n" + "\n".join(f"- {n}" for n in research.recent_news))
 
 
+def send_option(job: JobPosting) -> tuple[str | None, bool]:
+    """Returns (recipient to email, whether approving is allowed). Sending is always opt-in."""
+    address = application_email(job)
+    if not address:
+        return None, True
+    if not email_configured():
+        st.info(
+            f"This job takes applications by email at {address}. Download your documents after "
+            "approving and email them yourself, or set the SMTP_* values in .env to send from here."
+        )
+        return None, True
+
+    if not st.checkbox(f"Also email my application to {address}", key="send_email"):
+        return None, True
+    recipient = st.text_input(
+        "Recipient (check it against the job posting)", value=address, key="send_to"
+    ).strip()
+    if not EMAIL_PATTERN.fullmatch(recipient):
+        st.error("Enter a valid email address.")
+        return None, False
+    st.caption(
+        f"Your resume and cover letter PDFs will be sent from {settings.sender_email} to {recipient}. "
+        "This can't be undone."
+    )
+    return recipient, True
+
+
 def decide(decision: HumanDecision, config: RunnableConfig, label: str) -> None:
     if run_with_progress(resume_command(decision), config, label):
         st.rerun()
@@ -230,12 +269,18 @@ def review_screen(state: dict[str, Any], config: RunnableConfig) -> None:
         job_tab(state)
 
     st.subheader("Your decision")
+    send_to, send_ok = send_option(JobPosting.model_validate(state["job_details"]))
     approve_col, reject_col = st.columns(2)
-    if approve_col.button("Approve", type="primary"):
+    if approve_col.button("Approve and send" if send_to else "Approve", type="primary", disabled=not send_ok):
         decide(
-            HumanDecision(action="approve", reverted_bullets=reverted, cover_letter_text=letter_text),
+            HumanDecision(
+                action="approve",
+                reverted_bullets=reverted,
+                cover_letter_text=letter_text,
+                send_to=send_to,
+            ),
             config,
-            "Saving your approval",
+            "Sending your application" if send_to else "Saving your approval",
         )
     if reject_col.button("Reject — don't apply"):
         decide(HumanDecision(action="reject"), config, "Recording your decision")
@@ -266,15 +311,34 @@ def finished_screen(state: dict[str, Any]) -> None:
         return
     if status != "approved":
         return
-    st.success("Approved. Download your documents below.")
+
+    submission_data = state.get("submission")
+    submission = Submission.model_validate(submission_data) if submission_data else None
+    if submission and submission.status == "sent":
+        st.success(f"Sent to {submission.recipient}. A copy of your documents is below.")
+    elif submission and submission.status == "failed":
+        st.error(f"Approved, but the email wasn't sent: {submission.error}")
+        st.caption("Download your documents below and send them yourself.")
+    else:
+        st.success("Approved. Download your documents and apply on the job's page.")
+        if submission and submission.apply_url:
+            st.link_button("Open the application page", submission.apply_url)
+
     tailored = TailoredResume.model_validate(state["tailored_resume"])
     letter = CoverLetter.model_validate(state["cover_letter"])
+    contact = tailored.resume.contact
+    name = safe_filename(contact.name) or "Applicant"
     resume_col, letter_col = st.columns(2)
     resume_col.download_button(
-        "Download resume (.md)", render_markdown(tailored.resume), "tailored_resume.md", "text/markdown"
+        "Resume (PDF)", resume_pdf(tailored.resume), f"{name}_Resume.pdf", "application/pdf"
+    )
+    resume_col.download_button("Resume (Word)", resume_docx(tailored.resume), f"{name}_Resume.docx", DOCX)
+    letter_col.download_button(
+        "Cover letter (PDF)", cover_letter_pdf(letter, contact), f"{name}_Cover_Letter.pdf",
+        "application/pdf",
     )
     letter_col.download_button(
-        "Download cover letter (.txt)", render_cover_letter(letter), "cover_letter.txt", "text/plain"
+        "Cover letter (Word)", cover_letter_docx(letter, contact), f"{name}_Cover_Letter.docx", DOCX
     )
 
 

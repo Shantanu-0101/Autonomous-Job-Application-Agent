@@ -45,6 +45,10 @@ class AgentState(TypedDict, total=False):
     human_feedback: dict[str, list[str]] | None  # {"resume": [...], "cover_letter": [...]}
     user_requested_revision: bool  # pending candidates come from the user's feedback
 
+    # Module 9: Submission
+    send_to: str | None  # address the user confirmed for emailing the application
+    submission: dict[str, Any] | None  # a Submission dump
+
     # Status tracking — reducers let parallel nodes append in the same step
     completed_steps: Annotated[list[str], operator.add]
     errors: Annotated[list[str], operator.add]

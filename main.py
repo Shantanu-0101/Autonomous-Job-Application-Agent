@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.llm.models import HumanDecision
+from app.llm.models import (
+    EMAIL_PATTERN,
+    CoverLetter,
+    HumanDecision,
+    JobPosting,
+    Submission,
+    TailoredResume,
+)
 from app.logging_config import logger
 
 OUTPUT_KEYS = (
@@ -20,6 +27,7 @@ OUTPUT_KEYS = (
     "fit_assessment",
     "application_review",
     "approval_status",
+    "submission",
     "completed_steps",
     "errors",
 )
@@ -97,6 +105,16 @@ def print_report(result: dict[str, Any]) -> None:
     if status:
         print(f"Status: {status.replace('_', ' ').capitalize()}")
 
+    submission_data = result.get("submission")
+    if submission_data:
+        submission = Submission.model_validate(submission_data)
+        if submission.status == "sent":
+            print(f"Emailed to {submission.recipient} at {submission.sent_at}")
+        elif submission.status == "failed":
+            print(f"Not sent: {submission.error}")
+        elif submission.apply_url:
+            print(f"Apply here with your exported documents: {submission.apply_url}")
+
 
 def write_report(result: dict[str, Any], as_json: bool, output: str | None) -> None:
     # Writing the file ourselves avoids shell redirects re-encoding UTF-8 (e.g. PowerShell's ">").
@@ -110,12 +128,27 @@ def write_report(result: dict[str, Any], as_json: bool, output: str | None) -> N
         logger.info("Wrote report to %s", output)
 
 
-def ask_decision() -> HumanDecision | None:
+def ask_send_to(email_hint: str) -> str | None:
+    """Sending is irreversible, so the user must type the recipient address to confirm."""
+    while True:
+        typed = input(
+            f"This job takes applications by email at {email_hint}.\n"
+            "Type the address to send your application now, or press Enter to skip: "
+        ).strip()
+        if not typed:
+            return None
+        if EMAIL_PATTERN.fullmatch(typed):
+            return typed
+        print(f'"{typed}" is not a valid email address.')
+
+
+def ask_decision(email_hint: str | None = None) -> HumanDecision | None:
     try:
         while True:
             choice = input("\nApprove this application? [a]pprove / [c]hange / [r]eject: ").strip().lower()
             if choice in ("a", "approve"):
-                return HumanDecision(action="approve")
+                send_to = ask_send_to(email_hint) if email_hint else None
+                return HumanDecision(action="approve", send_to=send_to)
             if choice in ("r", "reject"):
                 return HumanDecision(action="reject")
             if choice in ("c", "change"):
@@ -132,6 +165,48 @@ def ask_decision() -> HumanDecision | None:
         return None
 
 
+def export_documents(result: dict[str, Any], export_dir: str) -> list[Path]:
+    from app.generators.export import (
+        cover_letter_docx,
+        cover_letter_pdf,
+        resume_docx,
+        resume_pdf,
+        safe_filename,
+    )
+
+    tailored = TailoredResume.model_validate(result["tailored_resume"])
+    letter = CoverLetter.model_validate(result["cover_letter"])
+    job = result.get("job_details") or {}
+    folder = Path(export_dir) / safe_filename(job.get("company", ""), job.get("title", ""))
+    folder.mkdir(parents=True, exist_ok=True)
+    contact = tailored.resume.contact
+    files = {
+        "resume.pdf": resume_pdf(tailored.resume),
+        "resume.docx": resume_docx(tailored.resume),
+        "cover_letter.pdf": cover_letter_pdf(letter, contact),
+        "cover_letter.docx": cover_letter_docx(letter, contact),
+    }
+    paths = []
+    for name, data in files.items():
+        path = folder / name
+        path.write_bytes(data)
+        paths.append(path)
+    return paths
+
+
+def email_hint(state: dict[str, Any]) -> str | None:
+    """The posting's application address, if sending is set up; otherwise explain how."""
+    from app.tools.email_sender import email_configured
+    from app.tools.submitter import application_email
+
+    job_data = state.get("job_details")
+    address = application_email(JobPosting.model_validate(job_data)) if job_data else None
+    if address and not email_configured():
+        print(f"This job takes applications at {address}. Set the SMTP_* values in .env to send from here.")
+        return None
+    return address
+
+
 def run_pipeline(
     resume_path: str,
     job_url: str,
@@ -141,6 +216,8 @@ def run_pipeline(
     as_json: bool,
     output: str | None = None,
     auto_approve: bool = False,
+    send_to: str | None = None,
+    export_dir: str = "data/outputs",
 ) -> int:
     from app.graph.builder import build_graph
     from app.graph.runner import awaiting_approval, current_state, new_run_config, resume_command
@@ -159,8 +236,12 @@ def run_pipeline(
     graph.invoke(inputs, config)
 
     while awaiting_approval(graph, config):
-        write_report(current_state(graph, config), as_json, output)
-        decision = HumanDecision(action="approve") if auto_approve else ask_decision()
+        state = current_state(graph, config)
+        write_report(state, as_json, output)
+        if auto_approve:
+            decision: HumanDecision | None = HumanDecision(action="approve", send_to=send_to)
+        else:
+            decision = ask_decision(email_hint(state))
         if decision is None:
             print("No decision given; nothing was approved. Re-run with --yes to approve automatically.")
             return 2
@@ -168,6 +249,9 @@ def run_pipeline(
 
     result = current_state(graph, config)
     write_report(result, as_json, output)
+    if result.get("approval_status") == "approved":
+        paths = export_documents(result, export_dir)
+        print("Saved:\n" + "\n".join(f"  {p}" for p in paths))
     return 1 if result.get("errors") else 0
 
 
@@ -188,6 +272,12 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Print raw pipeline state as JSON")
     parser.add_argument("--output", help="Write the report to this file (UTF-8) instead of stdout")
     parser.add_argument("--yes", action="store_true", help="Approve automatically instead of asking")
+    parser.add_argument(
+        "--send-to", help="With --yes: email the approved application to this address"
+    )
+    parser.add_argument(
+        "--export-dir", default="data/outputs", help="Where approved PDF/DOCX files are saved"
+    )
     parser.add_argument("--health-check", action="store_true", help="Verify the LLM connection")
     args = parser.parse_args()
 
@@ -202,6 +292,10 @@ def main() -> int:
         return 0
     if not args.resume or not (args.job_url or args.job_file):
         parser.error("--resume and one of --job-url / --job-file are required (or use --health-check)")
+    if args.send_to and not args.yes:
+        parser.error("--send-to only applies with --yes; without it you'll be asked interactively")
+    if args.send_to and not EMAIL_PATTERN.fullmatch(args.send_to.strip()):
+        parser.error(f'--send-to "{args.send_to}" is not a valid email address')
 
     job_text = Path(args.job_file).read_text(encoding="utf-8") if args.job_file else ""
     return run_pipeline(
@@ -213,6 +307,8 @@ def main() -> int:
         args.json,
         args.output,
         auto_approve=args.yes,
+        send_to=args.send_to.strip() if args.send_to else None,
+        export_dir=args.export_dir,
     )
 
 
