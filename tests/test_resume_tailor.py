@@ -124,6 +124,17 @@ def test_reorders_bullets_and_tracks_positions():
     ]
 
 
+def test_cosmetic_rewrites_keep_original_and_are_not_listed_as_changes():
+    tailored = apply_tailoring(
+        ORIGINAL,
+        result(experience=[
+            entry(0, (0, "built REST APIs  serving 2M requests per day."), (1, "Organized team lunches!")),
+        ]),
+    )
+    assert tailored.resume.experience[0].bullets == ORIGINAL.experience[0].bullets
+    assert tailored.bullet_changes == []
+
+
 def test_ignores_invalid_indices_and_duplicates():
     tailored = apply_tailoring(
         ORIGINAL,

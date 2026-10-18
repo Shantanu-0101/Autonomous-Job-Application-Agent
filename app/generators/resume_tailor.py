@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 from typing import Any, Literal
 
 from app.generators.common import (
@@ -126,6 +128,19 @@ def _entry_label(resume: ParsedResume, section: Section, entry: int) -> str:
     return f"project {resume.projects[entry].name}"
 
 
+_DASHES = re.compile(r"[‐-―−]")
+_NON_WORD = re.compile(r"[\s.,;:!]+")
+
+
+def _same_wording(a: str, b: str) -> bool:
+    """True if two bullets differ only in case, spacing, dash style, or punctuation."""
+    def norm(text: str) -> str:
+        text = _DASHES.sub("-", unicodedata.normalize("NFKC", text))
+        return _NON_WORD.sub(" ", text).strip().casefold()
+
+    return norm(a) == norm(b)
+
+
 def _entry_context(resume: ParsedResume, section: Section, entry: int) -> str:
     if section == "experience":
         return _entry_label(resume, section, entry)
@@ -166,7 +181,9 @@ def _merge_section(
                     "the rewrite changed its numbers."
                 )
                 text = source
-            if text != source:
+            if _same_wording(text, source):
+                text = source  # punctuation/spacing-only edits aren't worth a before/after
+            else:
                 entry_changes.append(BulletChange(
                     section=section, entry=i, position=len(bullets), original=source, rewritten=text
                 ))
