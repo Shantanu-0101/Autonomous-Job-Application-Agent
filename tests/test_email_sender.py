@@ -1,3 +1,4 @@
+import re
 import smtplib
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,7 @@ from app.tools.email_sender import (
     find_email,
     is_valid_email,
     send_email,
+    verify_email_settings,
 )
 from app.tools.submitter import application_email, application_url, compose_application
 
@@ -187,3 +189,47 @@ def test_network_errors_are_retried(mock_smtp, smtp_settings, no_sleep):
     with pytest.raises(EmailSendError, match="refused"):
         send_email(build_email("hr@acme.io", "s", "b", []))
     assert mock_smtp.call_count == 3
+
+
+@patch("app.tools.email_sender.smtplib.SMTP")
+def test_failure_message_names_the_step_and_suggests_a_fix(mock_smtp, smtp_settings, no_sleep):
+    server = smtp_mock()
+    server.login.side_effect = smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+    mock_smtp.return_value = server
+
+    with pytest.raises(EmailSendError) as raised:
+        send_email(build_email("hr@acme.io", "s", "b", []))
+
+    message = str(raised.value)
+    assert "failed while logging in: Connection unexpectedly closed" in message
+    assert "phone hotspot" in message
+
+
+def test_verify_requires_configuration():
+    with pytest.raises(EmailNotConfiguredError):
+        verify_email_settings()
+
+
+@patch("app.tools.email_sender.smtplib.SMTP")
+def test_verify_logs_in_without_sending(mock_smtp, smtp_settings):
+    server = smtp_mock()
+    mock_smtp.return_value = server
+    verify_email_settings()
+    server.login.assert_called_once_with("me@example.com", "app-password")
+    server.send_message.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (smtplib.SMTPAuthenticationError(535, b"bad"), "rejected the login"),
+        (smtplib.SMTPServerDisconnected("closed"), "Could not connect to smtp.example.com:587 (closed)"),
+    ],
+)
+@patch("app.tools.email_sender.smtplib.SMTP")
+def test_verify_explains_failures(mock_smtp, error, message, smtp_settings):
+    server = smtp_mock()
+    server.login.side_effect = error
+    mock_smtp.return_value = server
+    with pytest.raises(EmailSendError, match=re.escape(message)):
+        verify_email_settings()

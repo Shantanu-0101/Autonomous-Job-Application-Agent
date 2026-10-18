@@ -43,7 +43,7 @@ from app.llm.models import (
 )
 from app.memory.history import HistoryCheck
 from app.memory.tracker import STATUSES, get_tracker
-from app.tools.email_sender import email_configured
+from app.tools.email_sender import EmailSendError, email_configured, verify_email_settings
 from app.tools.submitter import application_email
 
 UPLOAD_DIR = Path("data/resumes/uploads")
@@ -485,6 +485,13 @@ def main() -> None:
             help="More rounds can improve the documents but take longer and use more of your LLM quota.",
         )
         st.caption(f"LLM provider: {settings.llm_provider}")
+        if email_configured() and st.button("Check email settings"):
+            try:
+                verify_email_settings()
+            except EmailSendError as e:
+                st.error(str(e))
+            else:
+                st.success(f"Signed in to {settings.smtp_host} as {settings.smtp_username}. Nothing was sent.")
         if st.session_state.get("run_config") and st.button("Start over"):
             start_over()
             st.rerun()

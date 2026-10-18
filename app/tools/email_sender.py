@@ -87,28 +87,57 @@ def _connect(cfg: Settings) -> smtplib.SMTP:
     return server
 
 
-def send_email(message: EmailMessage, cfg: Settings | None = None) -> str:
-    """Send with retries for temporary failures. Returns the Message-ID."""
-    cfg = cfg or settings
+LOGIN_REJECTED = (
+    "The email server rejected the login. Check SMTP_USERNAME and SMTP_PASSWORD "
+    "(Gmail needs an App Password)."
+)
+NETWORK_HINT = (
+    "Your network may be blocking outgoing email — common on college or office Wi-Fi, and with "
+    "antivirus 'mail shield' features. Try another network, such as a phone hotspot."
+)
+
+
+def _require_configuration(cfg: Settings) -> None:
     if not email_configured(cfg):
         raise EmailNotConfiguredError(
             "Email sending isn't set up. Add SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD, and SENDER_EMAIL."
         )
 
+
+def verify_email_settings(cfg: Settings | None = None) -> None:
+    """Connect and log in without sending anything. Raises EmailSendError with a fix to try."""
+    cfg = cfg or settings
+    _require_configuration(cfg)
+    try:
+        with _connect(cfg) as server:
+            server.login(cfg.smtp_username, cfg.smtp_password)
+    except smtplib.SMTPAuthenticationError as e:
+        raise EmailSendError(LOGIN_REJECTED) from e
+    except (smtplib.SMTPException, OSError) as e:
+        raise EmailSendError(
+            f"Could not connect to {cfg.smtp_host}:{cfg.smtp_port} ({e}). {NETWORK_HINT}"
+        ) from e
+
+
+def send_email(message: EmailMessage, cfg: Settings | None = None) -> str:
+    """Send with retries for temporary failures. Returns the Message-ID."""
+    cfg = cfg or settings
+    _require_configuration(cfg)
+
     for attempt in range(1, MAX_ATTEMPTS + 1):
         error: Exception
         temporary: bool
+        stage = "connecting to the mail server"
         try:
             with _connect(cfg) as server:
+                stage = "logging in"
                 server.login(cfg.smtp_username, cfg.smtp_password)
+                stage = "sending the message"
                 server.send_message(message)
             logger.info("Sent email to %s", message["To"])
             return str(message["Message-ID"])
         except smtplib.SMTPAuthenticationError as e:
-            raise EmailSendError(
-                "The email server rejected the login. Check SMTP_USERNAME and SMTP_PASSWORD "
-                "(Gmail needs an App Password)."
-            ) from e
+            raise EmailSendError(LOGIN_REJECTED) from e
         except smtplib.SMTPRecipientsRefused as e:
             raise EmailSendError(f"The email server refused the recipient {message['To']}.") from e
         # SMTP errors subclass OSError, so they must be handled before the network-error clause.
@@ -123,8 +152,9 @@ def send_email(message: EmailMessage, cfg: Settings | None = None) -> str:
             temporary, error = True, e
 
         if not temporary or attempt == MAX_ATTEMPTS:
-            raise EmailSendError(f"Could not send the email: {error}") from error
-        logger.warning("Email attempt %d failed (%s); retrying", attempt, error)
+            hint = f" {NETWORK_HINT}" if temporary else ""
+            raise EmailSendError(f"Could not send the email (failed while {stage}: {error}).{hint}") from error
+        logger.warning("Email attempt %d failed while %s (%s); retrying", attempt, stage, error)
         time.sleep(2**attempt)
 
     raise AssertionError("unreachable")

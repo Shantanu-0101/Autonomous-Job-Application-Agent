@@ -212,6 +212,18 @@ def email_hint(state: dict[str, Any]) -> str | None:
     return address
 
 
+def check_email_settings() -> int:
+    from app.tools.email_sender import EmailNotConfiguredError, EmailSendError, verify_email_settings
+
+    try:
+        verify_email_settings()
+    except (EmailSendError, EmailNotConfiguredError) as e:
+        print(f"Email check failed: {e}")
+        return 1
+    print(f"Signed in to {settings.smtp_host} as {settings.smtp_username}. Nothing was sent.")
+    return 0
+
+
 def print_applications() -> None:
     from app.memory.tracker import get_tracker
 
@@ -323,6 +335,9 @@ def main() -> int:
     )
     parser.add_argument("--notes", help="With --set-status: notes to save")
     parser.add_argument("--health-check", action="store_true", help="Verify the LLM connection")
+    parser.add_argument(
+        "--test-email", action="store_true", help="Check the SMTP settings by logging in (sends nothing)"
+    )
     args = parser.parse_args()
 
     if isinstance(sys.stdout, io.TextIOWrapper):
@@ -336,6 +351,8 @@ def main() -> int:
         return 0
     if args.set_status:
         return set_status(args.set_status[0], args.set_status[1], args.notes)
+    if args.test_email:
+        return check_email_settings()
     if args.health_check:
         health_check()
         return 0
