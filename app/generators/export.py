@@ -102,7 +102,32 @@ def cover_letter_html(letter: CoverLetter, contact: ContactInfo) -> str:
     return "".join(header) + "<br/>" + "".join(body) + closing
 
 
-def html_to_pdf(markup: str, css: str) -> bytes:
+def _as_uri(text: str) -> str:
+    if "@" in text and "/" not in text:
+        return f"mailto:{text}"
+    return text if text.startswith(("http://", "https://")) else f"https://{text}"
+
+
+def link_targets(contact: ContactInfo, extra: list[str] | None = None) -> dict[str, str]:
+    """Visible text -> URI for every link the document shows."""
+    texts = [contact.email, contact.linkedin, contact.github, contact.portfolio, *contact.other_links]
+    return {t: _as_uri(t) for t in [*texts, *(extra or [])] if t}
+
+
+def _add_links(doc: pymupdf.Document, targets: dict[str, str]) -> None:
+    # Longest text first, so "github.com/me/repo" isn't claimed by the shorter "github.com/me".
+    for page_number in range(doc.page_count):
+        page = doc[page_number]
+        taken: list[pymupdf.Rect] = []
+        for text in sorted(targets, key=len, reverse=True):
+            for rect in page.search_for(text):
+                if any(rect.intersects(t) for t in taken):
+                    continue
+                page.insert_link({"kind": pymupdf.LINK_URI, "from": rect, "uri": targets[text]})
+                taken.append(rect)
+
+
+def html_to_pdf(markup: str, css: str, links: dict[str, str] | None = None) -> bytes:
     story = pymupdf.Story(html=markup, user_css=css)
     page = pymupdf.paper_rect(settings.pdf_page_size)
     content_area = page + (50, 45, -50, -45)
@@ -116,18 +141,21 @@ def html_to_pdf(markup: str, css: str) -> bytes:
         writer.end_page()
     writer.close()
 
-    # Embed only the glyphs used, so a one-page resume isn't hundreds of KB.
     doc = pymupdf.open(stream=buffer.getvalue(), filetype="pdf")
+    if links:
+        _add_links(doc, links)
+    # Embed only the glyphs used, so a one-page resume isn't hundreds of KB.
     doc.subset_fonts()
     return doc.tobytes(garbage=3, deflate=True)
 
 
 def resume_pdf(resume: ParsedResume) -> bytes:
-    return html_to_pdf(resume_html(resume), PDF_CSS)
+    project_links = [p.link for p in resume.projects if p.link]
+    return html_to_pdf(resume_html(resume), PDF_CSS, link_targets(resume.contact, project_links))
 
 
 def cover_letter_pdf(letter: CoverLetter, contact: ContactInfo) -> bytes:
-    return html_to_pdf(cover_letter_html(letter, contact), LETTER_CSS)
+    return html_to_pdf(cover_letter_html(letter, contact), LETTER_CSS, link_targets(contact))
 
 
 # --- DOCX ---

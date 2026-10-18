@@ -80,3 +80,23 @@ def test_cover_letter_docx():
 def test_safe_filename():
     assert safe_filename("Jane O'Doe", "Résumé") == "Jane_O_Doe_R_sum"
     assert safe_filename("", "  ") == "document"
+
+
+def pdf_links(data: bytes) -> list[str]:
+    doc = pymupdf.open(stream=data, filetype="pdf")
+    return [link["uri"] for i in range(doc.page_count) for link in doc[i].get_links()]
+
+
+def test_resume_pdf_links_match_visible_text():
+    resume = RESUME.model_copy(deep=True)
+    resume.contact.github = "github.com/jane"
+    resume.projects[0].link = "github.com/jane/autoapply"
+    links = pdf_links(resume_pdf(resume))
+    assert links.count("mailto:jane@example.com") == 1
+    assert "https://linkedin.com/in/jane" in links
+    assert links.count("https://github.com/jane") == 1  # not also placed over the project link
+    assert links.count("https://github.com/jane/autoapply") == 1
+
+
+def test_cover_letter_pdf_links_email():
+    assert pdf_links(cover_letter_pdf(LETTER, RESUME.contact)) == ["mailto:jane@example.com"]
