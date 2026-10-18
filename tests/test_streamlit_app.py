@@ -8,6 +8,7 @@ from streamlit.testing.v1 import AppTest
 from app.config import settings
 from app.graph.builder import build_graph
 from app.graph.runner import current_state, new_run_config
+from app.memory.tracker import get_tracker
 from app.llm.models import (
     ApplicationReview,
     BulletChange,
@@ -52,8 +53,15 @@ def job(**update) -> JobPosting:
 
 @pytest.fixture
 def paused_app(request):
-    """A Streamlit app session looking at a run paused for approval, with LLM steps mocked."""
-    posting = getattr(request, "param", job())
+    """A Streamlit app session looking at a run (normally paused for approval), LLM steps mocked.
+
+    Parametrize with a JobPosting, or a dict {"job": ..., "already_sent": True} to seed history.
+    """
+    param = getattr(request, "param", None)
+    options = param if isinstance(param, dict) else {"job": param or job()}
+    posting = options["job"]
+    if options.get("already_sent"):
+        get_tracker().record(posting, "sent")
     graph = build_graph()
     patches = {
         "app.graph.nodes.load_resume_file": (b"data", "r.pdf"),
@@ -170,3 +178,66 @@ def test_reject(paused_app):
     at, _ = paused_app
     button(at, "Reject — don't apply").click().run()
     assert at.info[0].value == "You chose not to apply to this job."
+
+
+# --- Memory ---
+
+
+def test_approved_application_appears_in_my_applications(paused_app):
+    at, _ = paused_app
+    button(at, "Approve").click().run()
+    at.radio(key="view").set_value("My applications").run()
+
+    assert not at.exception
+    table = at.dataframe[0].value if at.dataframe else None
+    assert table is not None
+    row = table.iloc[0]
+    assert (row["Company"], row["Role"], row["Status"], row["Fit"]) == ("Globex", "Backend Engineer", "ready", 70)
+    assert [m.label for m in at.metric] == ["Sent", "Applied", "Interviewing", "Offer"]
+
+
+def test_empty_history_page():
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["view"] = "My applications"
+    at.run()
+    assert at.info[0].value.startswith("No applications yet.")
+
+
+@pytest.mark.parametrize("paused_app", [{"job": job(), "already_sent": True}], indirect=True)
+def test_already_submitted_job_offers_apply_anyway(paused_app):
+    at, mocks = paused_app
+    assert at.error[0].value.startswith("You already applied to Backend Engineer at Globex")
+    assert len(at.error) == 1  # the blocked message isn't repeated in the error list
+    assert mocks["app.graph.nodes.tailor_resume"].call_count == 0
+
+    button(at, "Apply anyway").click().run()
+
+    assert not at.exception
+    assert mocks["app.graph.nodes.tailor_resume"].call_count == 1
+    assert mocks["app.graph.nodes.load_resume_file"].call_count == 1  # reused the parsed resume
+    assert any(b.label == "Approve" for b in at.button)
+
+
+def test_run_reopens_from_the_url(paused_app):
+    at, mocks = paused_app
+    run_id = at.session_state["run_config"]["configurable"]["thread_id"]
+
+    reopened = AppTest.from_file(APP, default_timeout=30)
+    reopened.query_params["run"] = run_id
+    reopened.run()
+
+    assert not reopened.exception
+    assert reopened.header[0].value == "Backend Engineer at Globex"
+    assert any(b.label == "Approve" for b in reopened.button)
+
+
+def test_start_over_deletes_the_saved_run(paused_app):
+    at, mocks = paused_app
+    graph = mocks["app.ui.streamlit_app.get_graph"].return_value
+    config = at.session_state["run_config"]
+
+    next(b for b in at.sidebar.button if b.label == "Start over").click().run()
+
+    assert "run_config" not in at.session_state
+    assert current_state(graph, config) == {}
+    assert button(at, "Tailor my application").disabled

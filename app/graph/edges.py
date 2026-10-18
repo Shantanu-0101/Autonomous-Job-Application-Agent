@@ -19,10 +19,17 @@ def route_after_review(state: AgentState) -> str:
     return "human_review"
 
 
+def route_after_history(state: AgentState) -> str:
+    history = state.get("history") or {}
+    if history.get("blocked") and not state.get("allow_duplicate"):
+        return END
+    return "research_company"
+
+
 def route_after_human(state: AgentState) -> str:
     status = state.get("approval_status")
     if status == "changes_requested":
         return "revise_application"
     if status == "approved":
         return "submit_application"
-    return END
+    return "record_application"

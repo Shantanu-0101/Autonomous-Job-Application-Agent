@@ -10,6 +10,7 @@ from app.graph.edges import route_after_human, route_after_review
 from app.graph.runner import awaiting_approval, current_state, new_run_config, resume_command
 from app.graph.nodes import (
     parse_resume_node,
+    research_company_node,
     review_application_node,
     revise_application_node,
     scrape_job_node,
@@ -18,6 +19,7 @@ from app.graph.nodes import (
     write_cover_letter_node,
 )
 from app.graph.state import AgentState
+from app.memory.tracker import get_tracker
 from app.tools.email_sender import EmailSendError
 from app.llm.models import (
     ApplicationReview,
@@ -186,7 +188,7 @@ def test_route_after_review(extra, expected):
 @pytest.mark.parametrize(
     ("status", "expected"),
     [("changes_requested", "revise_application"), ("approved", "submit_application"),
-     ("rejected", END)],
+     ("rejected", "record_application")],
 )
 def test_route_after_human(status, expected):
     assert route_after_human({"approval_status": status}) == expected
@@ -249,7 +251,7 @@ def test_graph_pauses_for_approval_after_review(agent):
     assert state["application_review"]["resume_score"] == 90
     assert "approval_status" not in state
     assert sorted(state["completed_steps"]) == sorted([
-        "parse_resume", "scrape_job", "research_company",
+        "parse_resume", "scrape_job", "check_history", "research_company",
         "tailor_resume", "write_cover_letter", "assess_fit", "review_application",
     ])
     assert mocks.review.call_count == mocks.tailor.call_count == mocks.letter.call_count == 1
@@ -262,7 +264,8 @@ def test_approve_finishes_the_run(agent):
     state = current_state(graph, config)
     assert not awaiting_approval(graph, config)
     assert state["approval_status"] == "approved"
-    assert state["completed_steps"][-2:] == ["human_review", "submit_application"]
+    assert state["completed_steps"][-3:] == ["human_review", "submit_application", "record_application"]
+    assert state["application_id"] == 1
     assert state["tailored_resume"] == TAILORED.model_dump()
     assert state["submission"]["status"] == "ready"
     assert state["submission"]["apply_url"] == ""  # JOB has no source URL in this test
@@ -361,7 +364,7 @@ def test_approve_with_send_to_emails_the_application(agent):
     assert mock_submit.call_args.args == ("hr@acme.io", JOB, TAILORED, LETTER)
     state = current_state(graph, config)
     assert state["submission"]["status"] == "sent"
-    assert state["completed_steps"][-1] == "submit_application"
+    assert state["completed_steps"][-1] == "record_application"
 
 
 def test_failed_send_is_recorded_not_raised(agent):
@@ -381,3 +384,52 @@ def test_submit_node_never_sends_twice(mock_submit):
     already = Submission(method="email", status="sent", recipient="hr@acme.io").model_dump()
     assert submit_application_node(base_state(submission=already, send_to="hr@acme.io")) == {}
     mock_submit.assert_not_called()
+
+
+# --- Memory ---
+
+
+def test_outcomes_are_recorded_in_the_tracker(agent):
+    graph, config, _ = agent([review(90, 90)], [TAILORED], [LETTER])
+    graph.invoke(resume_command(HumanDecision(action="reject")), config)
+
+    record = get_tracker().get(current_state(graph, config)["application_id"])
+    assert record is not None
+    assert (record.company, record.title, record.status, record.fit_score) == ("Acme", "Engineer", "skipped", 70)
+
+
+def test_submitted_job_stops_before_any_llm_work(agent):
+    get_tracker().record(JOB, "sent")
+    graph, config, mocks = agent([review(90, 90)], [TAILORED], [LETTER])
+
+    state = current_state(graph, config)
+    assert not awaiting_approval(graph, config)
+    assert state["history"]["blocked"] is True
+    assert state["errors"][0].startswith("You already applied to Engineer at Acme")
+    assert "research_company" not in state["completed_steps"]
+    assert mocks.tailor.call_count == mocks.letter.call_count == mocks.review.call_count == 0
+
+
+def test_apply_anyway_continues_past_a_duplicate(agent):
+    get_tracker().record(JOB, "sent")
+    graph, config, _ = agent([review(90, 90)], [TAILORED], [LETTER], allow_duplicate=True)
+
+    assert awaiting_approval(graph, config)
+    assert current_state(graph, config)["history"]["blocked"] is True
+
+
+def test_cached_company_research_skips_the_search(agent):
+    get_tracker().save_research("Acme", CompanyResearch(name="Acme", summary="Cached summary"))
+    with patch("app.graph.nodes.research_company") as mock_research:
+        graph, config, _ = agent([review(90, 90)], [TAILORED], [LETTER])
+    mock_research.assert_not_called()
+    assert current_state(graph, config)["company_research"]["summary"] == "Cached summary"
+
+
+@patch("app.graph.nodes.research_company", return_value=RESEARCH)
+def test_fresh_research_is_cached(mock_research):
+    result = research_company_node({"job_details": JOB.model_dump()})
+    assert result["company_research"] == RESEARCH.model_dump()
+    assert get_tracker().cached_research("Acme", 14) == RESEARCH
+    research_company_node({"job_details": JOB.model_dump()})
+    assert mock_research.call_count == 1

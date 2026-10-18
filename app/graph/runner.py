@@ -11,6 +11,7 @@ from app.llm.models import HumanDecision
 STEP_LABELS = {
     "parse_resume": "Read your resume",
     "scrape_job": "Read the job posting",
+    "check_history": "Checked your application history",
     "research_company": "Researched the company",
     "tailor_resume": "Tailored your resume",
     "write_cover_letter": "Wrote the cover letter",
@@ -19,6 +20,7 @@ STEP_LABELS = {
     "revise_application": "Revised the documents",
     "human_review": "Recorded your decision",
     "submit_application": "Prepared your application",
+    "record_application": "Saved it to your history",
 }
 
 

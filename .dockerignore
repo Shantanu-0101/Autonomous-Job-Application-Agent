@@ -11,3 +11,4 @@ __pycache__/
 data/resumes/
 data/outputs/
 data/faiss_index/
+data/*.sqlite*

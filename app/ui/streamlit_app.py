@@ -1,9 +1,13 @@
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
@@ -37,11 +41,18 @@ from app.llm.models import (
     Submission,
     TailoredResume,
 )
+from app.memory.history import HistoryCheck
+from app.memory.tracker import STATUSES, get_tracker
 from app.tools.email_sender import email_configured
 from app.tools.submitter import application_email
 
 UPLOAD_DIR = Path("data/resumes/uploads")
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+# Inputs carried over when re-running a job (e.g. "Apply anyway").
+RERUN_KEYS = (
+    "parsed_resume", "resume_text", "resume_warnings", "job_url", "job_description",
+    "cover_letter_tone", "max_revisions",
+)
 STATUS_LABELS = {
     "met": ":green[Met]",
     "partial": ":orange[Partial]",
@@ -52,8 +63,11 @@ STATUS_LABELS = {
 
 @st.cache_resource
 def get_graph() -> CompiledStateGraph:
-    # One graph (and in-memory checkpointer) per server process, shared by all sessions.
-    return build_graph()
+    # One graph per server process, shared by all sessions. Checkpoints live in SQLite so runs
+    # waiting for approval survive restarts and page refreshes.
+    path = Path(settings.checkpoint_db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return build_graph(SqliteSaver(sqlite3.connect(path, check_same_thread=False)))
 
 
 def run_with_progress(payload: dict[str, Any] | Command, config: RunnableConfig, label: str) -> bool:
@@ -69,8 +83,22 @@ def run_with_progress(payload: dict[str, Any] | Command, config: RunnableConfig,
     return True
 
 
+def start_run(inputs: dict[str, Any], label: str) -> None:
+    config = new_run_config()
+    st.session_state["run_config"] = config
+    # The run id in the URL lets a refresh (or a bookmark) reopen the same run.
+    st.query_params["run"] = config["configurable"]["thread_id"]
+    run_with_progress(inputs, config, label)
+
+
 def start_over() -> None:
-    st.session_state.pop("run_config", None)
+    config = st.session_state.pop("run_config", None)
+    st.query_params.clear()
+    if config:
+        # Saved checkpoints include the resume text; don't keep them once the user is done.
+        checkpointer = get_graph().checkpointer
+        if isinstance(checkpointer, BaseCheckpointSaver):
+            checkpointer.delete_thread(config["configurable"]["thread_id"])
 
 
 # --- Input screen ---
@@ -114,13 +142,36 @@ def input_screen() -> None:
     if job_text.strip():
         inputs["job_description"] = job_text.strip()
 
-    config = new_run_config()
-    st.session_state["run_config"] = config
     try:
-        run_with_progress(inputs, config, "Working on your application — this takes 1-3 minutes")
+        start_run(inputs, "Working on your application — this takes 1-3 minutes")
     finally:
         path.unlink(missing_ok=True)  # the parsed resume lives in the run state; drop the upload
     st.rerun()
+
+
+def history_section(state: dict[str, Any]) -> None:
+    history_data = state.get("history")
+    if not history_data:
+        return
+    history = HistoryCheck.model_validate(history_data)
+    stopped = history.blocked and not state.get("allow_duplicate")
+    if stopped:
+        st.error(history.message)
+        if st.button("Apply anyway"):
+            # Reuse the already-parsed resume: the uploaded file was deleted after the first run.
+            inputs = {key: state[key] for key in RERUN_KEYS if state.get(key) is not None}
+            start_run({**inputs, "allow_duplicate": True}, "Preparing a new application")
+            st.rerun()
+    elif history.message:
+        st.warning(history.message)
+    if history.similar:
+        with st.expander(f"Similar jobs you've applied to ({len(history.similar)})"):
+            for match in history.similar:
+                found = match.application
+                st.markdown(
+                    f"**{found.title}** at {found.company} — {found.status}, "
+                    f"{found.updated_at[:10]} · {match.similarity:.0%} similar"
+                )
 
 
 # --- Results ---
@@ -352,14 +403,56 @@ def results_screen(config: RunnableConfig) -> None:
     job = state.get("job_details")
     if job:
         st.header(f"{job['title']} at {job['company']}")
+    history_section(state)
     fit_section(state)
 
     if awaiting_approval(graph, config):
         review_screen(state, config)
     elif state.get("approval_status"):
         finished_screen(state)
+    history_message = (state.get("history") or {}).get("message") or ""
     for error in state.get("errors") or []:
-        st.error(error)
+        if not (history_message and error.startswith(history_message)):  # already shown above
+            st.error(error)
+
+
+# --- Application history ---
+
+
+def applications_screen() -> None:
+    tracker = get_tracker()
+    records = tracker.list()
+    if not records:
+        st.info("No applications yet. Approved and skipped jobs will appear here.")
+        return
+
+    counts = {s: sum(r.status == s for r in records) for s in ("sent", "applied", "interviewing", "offer")}
+    for column, (status, count) in zip(st.columns(len(counts)), counts.items()):
+        column.metric(status.capitalize(), count)
+
+    st.caption("Update the status and notes as you hear back. Changes save automatically.")
+    table = pd.DataFrame([
+        {
+            "id": r.id, "Company": r.company, "Role": r.title, "Status": r.status,
+            "Fit": r.fit_score, "Updated": r.updated_at[:10], "Notes": r.notes, "Link": r.job_url or None,
+        }
+        for r in records
+    ])
+    edited = st.data_editor(
+        table,
+        key="applications_editor",
+        hide_index=True,
+        use_container_width=True,
+        disabled=["id", "Company", "Role", "Fit", "Updated", "Link"],
+        column_config={
+            "id": None,
+            "Status": st.column_config.SelectboxColumn(options=list(STATUSES), required=True),
+            "Link": st.column_config.LinkColumn(display_text="Open"),
+        },
+    )
+    for before, after in zip(table.to_dict("records"), edited.to_dict("records")):
+        if (before["Status"], before["Notes"]) != (after["Status"], after["Notes"]):
+            tracker.update_status(int(after["id"]), after["Status"], notes=after["Notes"] or "")
 
 
 # --- Page ---
@@ -371,6 +464,17 @@ def main() -> None:
     st.caption(
         "Tailors your resume and cover letter to a job using only facts from your resume. "
         "Nothing is sent without your approval."
+    )
+
+    # Reopen the run named in the URL after a refresh or restart.
+    run_id = st.query_params.get("run")
+    if "run_config" not in st.session_state and run_id:
+        st.session_state["run_config"] = {"configurable": {"thread_id": run_id}}
+
+    # In the main area, not the sidebar: the sidebar collapses on narrow screens.
+    view = st.radio(
+        "View", ["New application", "My applications"], key="view",
+        horizontal=True, label_visibility="collapsed",
     )
 
     with st.sidebar:
@@ -385,6 +489,9 @@ def main() -> None:
             start_over()
             st.rerun()
 
+    if view == "My applications":
+        applications_screen()
+        return
     config = st.session_state.get("run_config")
     if config is None:
         input_screen()

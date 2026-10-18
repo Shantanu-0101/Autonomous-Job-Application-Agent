@@ -58,3 +58,21 @@ def test_export_documents_writes_pdf_and_docx(tmp_path):
     paths = export_documents(result, str(tmp_path))
     assert [p.name for p in paths] == ["resume.pdf", "resume.docx", "cover_letter.pdf", "cover_letter.docx"]
     assert all(p.parent.name == "Acme_Corp_ML_Engineer" and p.stat().st_size > 0 for p in paths)
+
+
+def test_list_and_set_status(capsys):
+    from app.llm.models import JobPosting
+    from app.memory.tracker import get_tracker
+    from main import print_applications, set_status
+
+    print_applications()
+    assert "No applications yet." in capsys.readouterr().out
+
+    record = get_tracker().record(JobPosting(title="Engineer", company="Acme", description="x"), "sent", 72)
+    print_applications()
+    assert f"{record.id:>4}  sent" in capsys.readouterr().out
+
+    assert set_status(str(record.id), "interviewing", "Round 1") == 0
+    assert get_tracker().get(record.id).status == "interviewing"  # type: ignore[union-attr]
+    assert set_status(str(record.id), "hired", None) == 2
+    assert set_status("999", "offer", None) == 2

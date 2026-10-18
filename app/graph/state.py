@@ -49,6 +49,11 @@ class AgentState(TypedDict, total=False):
     send_to: str | None  # address the user confirmed for emailing the application
     submission: dict[str, Any] | None  # a Submission dump
 
+    # Module 10: Memory
+    allow_duplicate: bool  # input: continue even if this job was already submitted
+    history: dict[str, Any] | None  # a HistoryCheck dump
+    application_id: int | None  # tracker row for this run's outcome
+
     # Status tracking — reducers let parallel nodes append in the same step
     completed_steps: Annotated[list[str], operator.add]
     errors: Annotated[list[str], operator.add]

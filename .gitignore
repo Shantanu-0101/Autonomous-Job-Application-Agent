@@ -32,6 +32,7 @@ htmlcov/
 data/resumes/
 data/outputs/
 data/faiss_index/
+data/*.sqlite*
 
 # Docker
 *.log

@@ -16,6 +16,7 @@ from app.llm.models import (
     TailoredResume,
 )
 from app.logging_config import logger
+from app.memory.tracker import STATUSES
 
 OUTPUT_KEYS = (
     "parsed_resume",
@@ -48,6 +49,10 @@ def print_report(result: dict[str, Any]) -> None:
     job = result.get("job_details") or {}
     if job:
         print(f"Job: {job.get('title')} at {job.get('company')}\n")
+
+    history_message = (result.get("history") or {}).get("message")
+    if history_message:
+        print(f"===== History =====\n  ! {history_message}\n")
 
     resume_warnings = result.get("resume_warnings") or []
     if resume_warnings:
@@ -207,6 +212,34 @@ def email_hint(state: dict[str, Any]) -> str | None:
     return address
 
 
+def print_applications() -> None:
+    from app.memory.tracker import get_tracker
+
+    records = get_tracker().list()
+    if not records:
+        print("No applications yet.")
+        return
+    print(f"{'ID':>4}  {'Status':<12} {'Fit':>4}  {'Updated':<10}  Role")
+    for r in records:
+        fit = "-" if r.fit_score is None else str(r.fit_score)
+        print(f"{r.id:>4}  {r.status:<12} {fit:>4}  {r.updated_at[:10]:<10}  {r.title} at {r.company}")
+
+
+def set_status(application_id: str, status: str, notes: str | None) -> int:
+    from app.memory.tracker import get_tracker
+
+    if status not in STATUSES:
+        print(f"Unknown status '{status}'. Use one of: {', '.join(STATUSES)}")
+        return 2
+    try:
+        record = get_tracker().update_status(int(application_id), status, notes)
+    except (ValueError, KeyError) as e:
+        print(f"Could not update application {application_id}: {e}")
+        return 2
+    print(f"#{record.id} {record.title} at {record.company} is now {record.status}.")
+    return 0
+
+
 def run_pipeline(
     resume_path: str,
     job_url: str,
@@ -218,6 +251,7 @@ def run_pipeline(
     auto_approve: bool = False,
     send_to: str | None = None,
     export_dir: str = "data/outputs",
+    allow_duplicate: bool = False,
 ) -> int:
     from app.graph.builder import build_graph
     from app.graph.runner import awaiting_approval, current_state, new_run_config, resume_command
@@ -227,6 +261,7 @@ def run_pipeline(
         "job_url": job_url,
         "cover_letter_tone": tone,
         "max_revisions": max_revisions,
+        "allow_duplicate": allow_duplicate,
     }
     if job_text:
         inputs["job_description"] = job_text
@@ -278,6 +313,15 @@ def main() -> int:
     parser.add_argument(
         "--export-dir", default="data/outputs", help="Where approved PDF/DOCX files are saved"
     )
+    parser.add_argument(
+        "--allow-duplicate", action="store_true", help="Continue even if you already applied to this job"
+    )
+    parser.add_argument("--list", action="store_true", help="Show your application history")
+    parser.add_argument(
+        "--set-status", nargs=2, metavar=("ID", "STATUS"),
+        help=f"Update an application's status ({', '.join(STATUSES)})",
+    )
+    parser.add_argument("--notes", help="With --set-status: notes to save")
     parser.add_argument("--health-check", action="store_true", help="Verify the LLM connection")
     args = parser.parse_args()
 
@@ -287,6 +331,11 @@ def main() -> int:
         settings.llm_provider = args.provider
     logger.info("LLM provider: %s", settings.llm_provider)
 
+    if args.list:
+        print_applications()
+        return 0
+    if args.set_status:
+        return set_status(args.set_status[0], args.set_status[1], args.notes)
     if args.health_check:
         health_check()
         return 0
@@ -309,6 +358,7 @@ def main() -> int:
         auto_approve=args.yes,
         send_to=args.send_to.strip() if args.send_to else None,
         export_dir=args.export_dir,
+        allow_duplicate=args.allow_duplicate,
     )
 
 

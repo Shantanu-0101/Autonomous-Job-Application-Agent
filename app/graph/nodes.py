@@ -22,6 +22,9 @@ from app.llm.models import (
     TailoredResume,
     Tone,
 )
+from app.memory.history import check_history, record_application
+from app.memory.job_memory import get_job_memory
+from app.memory.tracker import ApplicationStatus, get_tracker
 from app.parsers.resume_parser import (
     ResumeParseError,
     extract_text,
@@ -108,16 +111,33 @@ def research_company_node(state: AgentState) -> dict:
     if not company_name:
         return {"errors": ["Cannot research company: company name not found in job details"]}
 
+    tracker = get_tracker()
+    cached = tracker.cached_research(company_name, settings.research_cache_days)
+    if cached:
+        logger.info("Node: research_company — using cached research for %s", company_name)
+        return {"company_research": cached.model_dump(), "completed_steps": ["research_company"]}
+
     logger.info("Node: research_company — researching %s", company_name)
     try:
         research = research_company(company_name)
-        return {
-            "company_research": research.model_dump(),
-            "completed_steps": ["research_company"],
-        }
     except Exception as e:
         logger.error("Company research failed: %s", e)
         return {"errors": [f"Company research failed: {e}"]}
+    tracker.save_research(company_name, research)
+    return {"company_research": research.model_dump(), "completed_steps": ["research_company"]}
+
+
+def check_history_node(state: AgentState) -> dict:
+    job_data = state.get("job_details")
+    if not job_data:
+        return {}  # scraping failed; the research step reports it
+    job = JobPosting.model_validate(job_data)
+    logger.info("Node: check_history — %s at %s", job.title, job.company)
+    check = check_history(job, get_tracker(), get_job_memory())
+    updates: dict[str, Any] = {"history": check.model_dump(), "completed_steps": ["check_history"]}
+    if check.blocked and not state.get("allow_duplicate"):
+        updates["errors"] = [f"{check.message} Choose 'apply anyway' to prepare a new application."]
+    return updates
 
 
 def tailor_resume_node(state: AgentState) -> dict:
@@ -348,3 +368,33 @@ def submit_application_node(state: AgentState) -> dict:
         return {"submission": failed.model_dump(), "errors": [f"Sending failed: {e}"]}
 
     return {"submission": submission.model_dump(), "completed_steps": ["submit_application"]}
+
+
+def record_application_node(state: AgentState) -> dict:
+    job_data = state.get("job_details")
+    if not job_data:
+        return {}
+    submission_data = state.get("submission")
+    submission = Submission.model_validate(submission_data) if submission_data else None
+    if state.get("approval_status") == "rejected":
+        status: ApplicationStatus = "skipped"
+    elif submission and submission.status == "sent":
+        status = "sent"
+    else:
+        status = "ready"
+    fit_data = state.get("fit_assessment")
+
+    try:
+        record = record_application(
+            JobPosting.model_validate(job_data),
+            status,
+            get_tracker(),
+            get_job_memory(),
+            fit_score=fit_data.get("score") if fit_data else None,
+            submitted_to=submission.recipient if submission and submission.status == "sent" else "",
+        )
+    except Exception as e:
+        logger.error("Could not record the application: %s", e)
+        return {"errors": [f"Could not save this application to your history: {e}"]}
+    logger.info("Node: record_application — #%d %s", record.id, status)
+    return {"application_id": record.id, "completed_steps": ["record_application"]}

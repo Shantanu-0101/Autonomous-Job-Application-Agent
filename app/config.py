@@ -53,8 +53,16 @@ class Settings(BaseSettings):
     max_revisions: int = Field(default=1, ge=0, le=3)
 
     # Storage
+    tracker_db_path: str = "data/tracker.sqlite"
+    checkpoint_db_path: str = "data/checkpoints.sqlite"
     faiss_index_path: str = "data/faiss_index"
     max_resume_size_mb: int = Field(default=5, gt=0)
+
+    # Memory
+    research_cache_days: int = Field(default=14, ge=0)  # 0 disables the company research cache
+    embedding_model: str = "BAAI/bge-small-en-v1.5"  # local FastEmbed model, ~70 MB, no API key
+    similar_job_threshold: float = Field(default=0.75, gt=0, le=1)
+    duplicate_job_threshold: float = Field(default=0.93, gt=0, le=1)
 
     # Logging
     log_level: str = "INFO"
