@@ -61,8 +61,15 @@ class Settings(BaseSettings):
     # Memory
     research_cache_days: int = Field(default=14, ge=0)  # 0 disables the company research cache
     embedding_model: str = "BAAI/bge-small-en-v1.5"  # local FastEmbed model, ~70 MB, no API key
+    model_cache_dir: str = "data/models"  # keep downloads on the persistent data volume
+    # The embedding model adds ~150 MB of RAM. Turn off on 512 MB hosts; exact duplicate checks
+    # (same link, or same company and title) keep working without it.
+    semantic_memory: bool = True
     similar_job_threshold: float = Field(default=0.75, gt=0, le=1)
     duplicate_job_threshold: float = Field(default=0.93, gt=0, le=1)
+
+    # Web app access: required before anything is shown when set. Always set it on public hosts.
+    app_access_password: str = ""
 
     # Logging
     log_level: str = "INFO"

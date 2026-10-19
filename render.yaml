@@ -1,0 +1,29 @@
+# Render Blueprint: New > Blueprint > pick this repo. Values marked sync: false are asked for
+# in the Render dashboard and never stored in git.
+services:
+  - type: web
+    name: job-application-agent
+    runtime: docker
+    plan: free
+    healthCheckPath: /_stcore/health
+    autoDeploy: true
+    envVars:
+      - key: APP_ACCESS_PASSWORD
+        sync: false
+      - key: LLM_PROVIDER
+        value: groq
+      - key: LLM_STRUCTURED_OUTPUT_METHOD
+        value: json_schema
+      - key: MAX_REVISIONS
+        value: "0"
+      # The free plan has 512 MB of RAM; the local embedding model would use ~150 MB of it.
+      - key: SEMANTIC_MEMORY
+        value: "false"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false

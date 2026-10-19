@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 from email.message import EmailMessage
 
 from app.generators.export import cover_letter_pdf, resume_pdf, safe_filename
-from app.generators.render import render_cover_letter
-from app.llm.models import CoverLetter, JobPosting, Submission, TailoredResume
+from app.generators.render import join_parts
+from app.llm.models import ContactInfo, CoverLetter, JobPosting, Submission, TailoredResume
 from app.tools.email_sender import Attachment, build_email, find_email, send_email
 
 logger = logging.getLogger("job_agent.submitter")
@@ -37,9 +37,23 @@ def compose_application(
     return build_email(
         to=to,
         subject=subject,
-        body=render_cover_letter(letter),
+        body=email_body(job, letter, contact),
         attachments=application_attachments(tailored, letter),
         reply_to=contact.email,
+    )
+
+
+def email_body(job: JobPosting, letter: CoverLetter, contact: ContactInfo) -> str:
+    """A short note; the cover letter and resume travel as attachments."""
+    role = f"the {job.title} position" + (f" at {job.company}" if job.company else "")
+    signature = "\n".join(
+        line for line in (contact.name, join_parts(contact.email, contact.phone), contact.linkedin) if line
+    )
+    return (
+        f"{letter.greeting}\n\n"
+        f"I'd like to apply for {role}. My resume and cover letter are attached.\n\n"
+        "Thank you for your time and consideration. I look forward to hearing from you.\n\n"
+        f"Best regards,\n{signature}\n"
     )
 
 

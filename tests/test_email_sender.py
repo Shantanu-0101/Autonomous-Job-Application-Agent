@@ -95,9 +95,10 @@ def test_build_email_rejects_invalid_recipient(smtp_settings):
         build_email("not-an-address", "s", "b", [])
 
 
-def test_compose_application_uses_letter_and_pdf_attachments(smtp_settings):
-    tailored = TailoredResume(resume=ParsedResume(contact=ContactInfo(name="Jane Doe", email="jane@p.com")))
-    letter = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["I build APIs."], sign_off="Best,",
+def test_compose_application_sends_a_short_note_with_pdf_attachments(smtp_settings):
+    contact = ContactInfo(name="Jane Doe", email="jane@p.com", phone="+1 555 0100")
+    tailored = TailoredResume(resume=ParsedResume(contact=contact))
+    letter = CoverLetter(greeting="Dear Ms. Lee,", paragraphs=["I build APIs. " * 50], sign_off="Best,",
                          signature="Jane Doe")
     job = JobPosting(title="Engineer", company="Acme", description="x", application_method="hr@acme.io")
 
@@ -105,7 +106,13 @@ def test_compose_application_uses_letter_and_pdf_attachments(smtp_settings):
 
     assert message["Subject"] == "Application for Engineer — Jane Doe"
     assert message["Reply-To"] == "jane@p.com"
-    assert "I build APIs." in message.get_body().get_content()  # type: ignore[union-attr]
+    body = message.get_body().get_content()  # type: ignore[union-attr]
+    assert body == (
+        "Dear Ms. Lee,\n\n"
+        "I'd like to apply for the Engineer position at Acme. My resume and cover letter are attached.\n\n"
+        "Thank you for your time and consideration. I look forward to hearing from you.\n\n"
+        "Best regards,\nJane Doe\njane@p.com | +1 555 0100\n"
+    )
     names = [p.get_filename() for p in message.iter_attachments()]
     assert names == ["Jane_Doe_Resume.pdf", "Jane_Doe_Cover_Letter.pdf"]
 

@@ -197,3 +197,8 @@ def test_similar_jobs_at_other_companies_are_listed(tracker, memory, monkeypatch
 def test_history_works_without_semantic_memory(tracker):
     record_application(BACKEND, "sent", tracker, None)
     assert check_history(BACKEND, tracker, None).blocked
+
+
+def test_semantic_memory_can_be_turned_off(monkeypatch):
+    monkeypatch.setattr(settings, "semantic_memory", False)
+    assert get_job_memory() is None

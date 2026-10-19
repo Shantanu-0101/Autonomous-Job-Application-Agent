@@ -241,3 +241,27 @@ def test_start_over_deletes_the_saved_run(paused_app):
     assert "run_config" not in at.session_state
     assert current_state(graph, config) == {}
     assert button(at, "Tailor my application").disabled
+
+
+# --- Access ---
+
+
+def test_password_gate_hides_everything_until_correct(monkeypatch):
+    monkeypatch.setattr(settings, "app_access_password", "s3cret")
+    monkeypatch.setattr("app.ui.streamlit_app.time.sleep", lambda _s: None)
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    assert not any(b.label == "Tailor my application" for b in at.button)
+
+    at.text_input[0].input("wrong")
+    at.button[0].click().run()
+    assert at.error[0].value == "Wrong password."
+    assert not any(b.label == "Tailor my application" for b in at.button)
+
+    at.text_input[0].input("s3cret")
+    at.button[0].click().run()
+    assert any(b.label == "Tailor my application" for b in at.button)
+
+
+def test_no_password_configured_means_open_locally():
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    assert any(b.label == "Tailor my application" for b in at.button)

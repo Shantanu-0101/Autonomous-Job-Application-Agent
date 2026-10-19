@@ -21,10 +21,11 @@ def job_text(job: JobPosting) -> str:
     return "\n".join(p for p in parts if p)[:4000]
 
 
-def fastembed_embedder(model_name: str) -> Embedder:
+def fastembed_embedder(model_name: str, cache_dir: str) -> Embedder:
     from fastembed import TextEmbedding
 
-    model = TextEmbedding(model_name)  # downloads ~70 MB on first use, then runs locally on CPU
+    # Downloads ~70 MB on first use, then runs locally on CPU.
+    model = TextEmbedding(model_name, cache_dir=cache_dir)
 
     def embed(texts: Sequence[str]) -> np.ndarray:
         return np.array(list(model.embed(list(texts))), dtype="float32")
@@ -78,14 +79,16 @@ class JobMemory:
 
 
 @lru_cache(maxsize=2)
-def _memory_at(index_dir: str, model_name: str) -> JobMemory:
-    return JobMemory(index_dir, fastembed_embedder(model_name))
+def _memory_at(index_dir: str, model_name: str, cache_dir: str) -> JobMemory:
+    return JobMemory(index_dir, fastembed_embedder(model_name, cache_dir))
 
 
 def get_job_memory() -> JobMemory | None:
-    """The shared memory, or None if the embedding model can't be loaded (e.g. offline)."""
+    """The shared memory, or None if it's turned off or the model can't be loaded (e.g. offline)."""
+    if not settings.semantic_memory:
+        return None
     try:
-        return _memory_at(settings.faiss_index_path, settings.embedding_model)
+        return _memory_at(settings.faiss_index_path, settings.embedding_model, settings.model_cache_dir)
     except Exception as e:
         logger.warning("Semantic job memory unavailable: %s", e)
         return None

@@ -37,4 +37,6 @@ def default_settings(monkeypatch, tmp_path):
     )
     for name in Settings.model_fields:
         monkeypatch.setattr(settings, name, getattr(defaults, name))
-    monkeypatch.setattr(job_memory, "_memory_at", lambda index_dir, _model: JobMemory(index_dir, fake_embed))
+    monkeypatch.setattr(
+        job_memory, "_memory_at", lambda index_dir, *_model: JobMemory(index_dir, fake_embed)
+    )

@@ -1,4 +1,6 @@
+import hmac
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -458,6 +460,23 @@ def applications_screen() -> None:
 # --- Page ---
 
 
+def access_granted() -> bool:
+    """Ask for APP_ACCESS_PASSWORD when it's set; public deployments must set it."""
+    expected = settings.app_access_password
+    if not expected or st.session_state.get("authenticated"):
+        return True
+    with st.form("login"):
+        attempt = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Open")
+    if submitted:
+        if hmac.compare_digest(attempt.encode(), expected.encode()):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        time.sleep(1)  # slow down guessing
+        st.error("Wrong password.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="Job Application Agent", layout="wide")
     st.title("Job Application Agent")
@@ -465,6 +484,8 @@ def main() -> None:
         "Tailors your resume and cover letter to a job using only facts from your resume. "
         "Nothing is sent without your approval."
     )
+    if not access_granted():
+        return
 
     # Reopen the run named in the URL after a refresh or restart.
     run_id = st.query_params.get("run")
